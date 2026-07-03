@@ -35,9 +35,8 @@
     #brand h1 { margin:0; font-size:15px; font-weight:700; letter-spacing:.16em; color:#8dffab;
       text-shadow:0 0 18px rgba(96,255,140,.4); }
     #brand .cdr { margin-top:3px; font-size:10px; letter-spacing:.12em; color:#7dd98f; opacity:.85; }
-    #radioBtn { position:absolute; top:52px; left:16px; z-index:11; cursor:pointer;
-      width:30px; height:28px; font-size:14px; line-height:1; padding:0; color:#b8ffc9;
-      background:rgba(6,14,9,.7); border:1px solid rgba(96,255,140,.28); border-radius:6px; }
+    #radioBtn { cursor:pointer; width:40px; height:37px; font-size:16px; line-height:1; padding:0;
+      color:#b8ffc9; background:rgba(20,40,28,.6); border:1px solid rgba(96,255,140,.3); border-radius:6px; }
     #radioBtn:hover { background:rgba(30,56,40,.85); }
 
     /* ── Lecture cible (haut droite) ── */
@@ -53,9 +52,9 @@
       display:flex; align-items:center; gap:18px; padding:10px 20px;
       background:linear-gradient(to top, rgba(3,7,5,.98), rgba(3,7,5,.7) 60%, transparent);
       box-sizing:border-box; }
-    #hud .zone { display:flex; align-items:center; gap:14px; }   /* tout aligné verticalement */
+    #hud .zone { display:flex; align-items:flex-end; gap:14px; }   /* contrôles alignés en bas */
     #hud .zone.left { flex:1; justify-content:flex-start; }
-    #hud .zone.center { flex:none; }   /* radar parfaitement centré */
+    #hud .zone.center { flex:none; align-items:center; }   /* radar parfaitement centré */
     #hud .zone.right { flex:1; justify-content:flex-end; }
     #hud .lbl { font-size:9px; letter-spacing:.18em; opacity:.5; margin-bottom:5px; }
 
@@ -65,16 +64,17 @@
 
     /* ── Picker d'arme visuel (grille 2×2 qui s'ouvre vers le haut) ── */
     .wpick { position:relative; }
+    /* même radius pill qu'ENGAGE, fond inchangé */
     .wtrigger { display:flex; align-items:center; gap:8px; min-width:150px;
       background:rgba(20,40,28,.6); color:#b8ffc9; border:1px solid rgba(96,255,140,.3);
-      border-radius:6px; padding:8px 10px; font-family:inherit; font-size:12px; cursor:pointer;
+      border-radius:999px; padding:12px 18px; font-family:inherit; font-size:12px; cursor:pointer;
       letter-spacing:.03em; }
     .wtrigger .ic { font-size:16px; }
     .wtrigger .nm { flex:1; text-align:left; font-weight:600; }
     .wtrigger .ca { opacity:.5; font-size:10px; transition:transform .15s; }
     .wtrigger.open { border-color:#8dffab; }
     .wtrigger.open .ca { transform:rotate(180deg); }
-    .wgrid { position:absolute; bottom:calc(100% + 8px); left:0; z-index:20;
+    .wgrid { position:absolute; bottom:calc(100% + 8px); right:0; z-index:20;
       display:grid; grid-template-columns:1fr 1fr; gap:8px; width:214px; padding:8px;
       background:rgba(6,14,9,.97); border:1px solid rgba(96,255,140,.35); border-radius:10px;
       box-shadow:0 10px 30px rgba(0,0,0,.6); }
@@ -197,25 +197,15 @@
     <h1>☢ NUKE MY CITY</h1>
     <div class="cdr" id="cdrLine">CDR ——</div>
   </div>
-  <button id="radioBtn" title="Radio">📻</button>
   <div id="coords">⌖ AWAITING TARGET</div>
-  <div id="scoreboard"><div class="sc-hd">WORLD CONTROL · zones</div></div>
   <div id="status">booting…</div>
-
-  <div id="factionModal" hidden>
-    <div class="fm-box">
-      <div class="fm-title">CHOOSE YOUR FACTION</div>
-      <div class="fm-sub">every strike shifts world control toward your camp</div>
-      <div class="fm-row">
-        <button class="fm-btn" data-f="crimson" style="--c:#ff4d4d">CRIMSON</button>
-        <button class="fm-btn" data-f="azure" style="--c:#4da6ff">AZURE</button>
-        <button class="fm-btn" data-f="viridian" style="--c:#4dff88">VIRIDIAN</button>
-      </div>
-    </div>
-  </div>
 
   <div id="hud">
     <div class="zone left">
+      <div>
+        <div class="lbl">RADIO</div>
+        <button id="radioBtn" title="Radio">📻</button>
+      </div>
       <div>
         <div class="lbl">THEATER</div>
         <select id="jump" class="hudsel">
@@ -226,20 +216,6 @@
           <option value="tokyo">Tokyo</option>
           <option value="dubai">Dubai</option>
         </select>
-      </div>
-      <div>
-        <div class="lbl">ARMAMENT · keys 1-4</div>
-        <div id="weaponPicker" class="wpick">
-          <button id="weaponTrigger" class="wtrigger">
-            <span class="ic">🚀</span><span class="nm">MK-1</span><span class="ca">▴</span>
-          </button>
-          <div id="weaponGrid" class="wgrid" hidden>
-            <button class="wtile sel" data-w="mk1"><span class="ic">🚀</span><span class="nm">MK-1</span><span class="rr">missile · r150m</span></button>
-            <button class="wtile" data-w="rkt"><span class="ic">🚁</span><span class="nm">RKT ×8</span><span class="rr">salvo · r40m</span></button>
-            <button class="wtile" data-w="moab"><span class="ic">✈️</span><span class="nm">MOAB</span><span class="rr">air drop · r420m</span></button>
-            <button class="wtile" data-w="nuke"><span class="ic">☢️</span><span class="nm">NUKE-T</span><span class="rr">warhead · r950m</span></button>
-          </div>
-        </div>
       </div>
     </div>
     <div class="zone center">
@@ -255,6 +231,20 @@
       </div>
     </div>
     <div class="zone right">
+      <div>
+        <div class="lbl">ARMAMENT · keys 1-4</div>
+        <div id="weaponPicker" class="wpick">
+          <button id="weaponTrigger" class="wtrigger">
+            <span class="ic">🚀</span><span class="nm">MK-1</span><span class="ca">▴</span>
+          </button>
+          <div id="weaponGrid" class="wgrid" hidden>
+            <button class="wtile sel" data-w="mk1"><span class="ic">🚀</span><span class="nm">MK-1</span><span class="rr">missile · r150m</span></button>
+            <button class="wtile" data-w="rkt"><span class="ic">🚁</span><span class="nm">RKT ×8</span><span class="rr">salvo · r40m</span></button>
+            <button class="wtile" data-w="moab"><span class="ic">✈️</span><span class="nm">MOAB</span><span class="rr">air drop · r420m</span></button>
+            <button class="wtile" data-w="nuke"><span class="ic">☢️</span><span class="nm">NUKE-T</span><span class="rr">warhead · r950m</span></button>
+          </div>
+        </div>
+      </div>
       <button id="engage"><span class="txt">ENGAGE</span></button>
     </div>
   </div>
@@ -1495,9 +1485,7 @@
     }
     map.on("load", () => {
       ensurePseudo();
-      ensureFaction();
-      loadRegions().then(syncZones);          // zones + coloriage + scoreboard
-      setInterval(syncZones, 20000);          // sync périodique (conquêtes des autres)
+      // Factions/conquête gelées (jeu solo) — pas de modal ni de zones colorées.
       fetch("/api/strikes?limit=500")
         .then((r) => r.json())
         .then((d) => {
