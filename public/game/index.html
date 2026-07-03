@@ -1,0 +1,1064 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <title>NUKE MY CITY</title>
+
+  <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+  <link href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet" />
+  <!-- Decals cratère/suie générés avec Blender (base64, voir crater_gen.py) -->
+  <script src="assets/decals.js"></script>
+
+  <script type="importmap">
+    { "imports": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+    } }
+  </script>
+  <!-- Modèles GLB embarqués (jet, hélico, avion de ligne) -->
+  <script src="assets/models.js"></script>
+
+  <style>
+    html, body, #map { width:100%; height:100%; margin:0; padding:0; overflow:hidden;
+      font-family:"Cascadia Mono", ui-monospace, Consolas, monospace; background:#000; }
+    #map canvas { cursor: crosshair; }
+
+    /* ── HUD militaire ── */
+    #panel {
+      position:absolute; top:12px; left:12px; z-index:10;
+      background:rgba(6,12,9,.86); color:#b8ffc9; padding:12px 14px; border-radius:6px;
+      border:1px solid rgba(96,255,140,.28);
+      backdrop-filter:blur(8px); box-shadow:0 6px 24px rgba(0,0,0,.5); max-width:300px;
+      font-size:12px;
+    }
+    #panel h1 { font-size:13px; margin:0 0 10px; font-weight:600; letter-spacing:.12em; color:#8dffab; }
+    #panel .sect { font-size:10px; opacity:.55; letter-spacing:.18em; margin:10px 0 4px; }
+    #panel button {
+      margin:2px 4px 2px 0; padding:5px 9px; border:1px solid rgba(96,255,140,.3); border-radius:4px;
+      cursor:pointer; background:rgba(20,40,28,.6); color:#b8ffc9; font-size:11px;
+      font-family:inherit; letter-spacing:.05em;
+    }
+    #panel button:hover { background:rgba(40,80,55,.7); }
+    #panel button.wbtn { min-width:74px; text-align:left; }
+    #panel button.wbtn span { display:block; font-size:9px; opacity:.6; }
+    #panel button.wbtn.sel { background:rgba(90,55,10,.75); border-color:#ffb84d; color:#ffd9a0; }
+    #panel .hint { font-size:10px; opacity:.6; margin-top:10px; line-height:1.5; }
+
+    #status { position:absolute; bottom:8px; left:8px; z-index:10; color:#7dd98f;
+      background:rgba(0,10,4,.6); padding:3px 8px; border-radius:4px; font-size:10px; }
+    #coords { position:absolute; bottom:8px; right:8px; z-index:10; color:#8dffab;
+      background:rgba(0,10,4,.6); padding:3px 10px; border-radius:4px; font-size:11px;
+      letter-spacing:.08em; }
+
+    /* ── Habillage "flux satellite" ── */
+    #crt { position:absolute; inset:0; pointer-events:none; z-index:9;
+      background:repeating-linear-gradient(0deg, rgba(0,0,0,.12) 0 1px, transparent 1px 3px); }
+    #vig { position:absolute; inset:0; pointer-events:none; z-index:9;
+      box-shadow:inset 0 0 240px rgba(0,0,0,.8); }
+    #flash { position:fixed; inset:0; opacity:0; pointer-events:none; z-index:20;
+      background:radial-gradient(ellipse at center, #ffdfae 0%, rgba(255,190,120,.55) 45%, rgba(120,70,20,0) 80%); }
+
+    /* ── Glitch du flux satellite à l'impact (le capteur sature) ── */
+    #map.glitch { animation: feedGlitch .45s steps(5) both; }
+    @keyframes feedGlitch {
+      0%   { filter:contrast(1.9) saturate(.25) brightness(1.6) hue-rotate(10deg); }
+      30%  { filter:contrast(1.15) saturate(.75) brightness(1.05); }
+      55%  { filter:contrast(1.5) saturate(.45) brightness(1.3) hue-rotate(-7deg); }
+      100% { filter:none; }
+    }
+
+    /* ── Missile (élément DOM animé en screen-space) ── */
+    .missile { position:fixed; left:0; top:0; width:4px; height:84px; z-index:8; pointer-events:none;
+      background:linear-gradient(to bottom, transparent, rgba(255,220,160,.15) 40%, #ffd9a0 85%, #fff);
+      filter:drop-shadow(0 0 6px rgba(255,200,120,.9)); border-radius:2px; }
+    .rocket { position:fixed; left:0; top:0; width:3px; height:38px; z-index:8; pointer-events:none;
+      background:linear-gradient(to bottom, transparent, rgba(255,200,140,.2) 45%, #ffce8a 88%, #fff);
+      filter:drop-shadow(0 0 4px rgba(255,190,110,.85)); border-radius:2px; }
+
+    /* ── Label pseudo flottant au-dessus d'un cratère (goofy, screenshot-able) ── */
+    .strike-label { font-family:"Cascadia Mono", ui-monospace, Consolas, monospace;
+      font-size:11px; font-weight:600; letter-spacing:.03em; white-space:nowrap;
+      color:#d6ffe2; background:rgba(6,14,9,.82); border:1px solid rgba(96,255,140,.35);
+      padding:2px 7px; border-radius:5px; transform:translateY(-6px);
+      text-shadow:0 1px 2px #000; box-shadow:0 3px 10px rgba(0,0,0,.5); cursor:default; }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <div id="crt"></div>
+  <div id="vig"></div>
+  <div id="flash"></div>
+
+  <div id="panel">
+    <h1>☢ NUKE MY CITY</h1>
+    <div class="sect">ARMEMENT (touches 1-4)</div>
+    <div id="weapons">
+      <button class="wbtn sel" data-w="mk1">MK-1<span>missile · r 150 m</span></button>
+      <button class="wbtn" data-w="rkt">RKT ×8<span>🚁 rafale · r 40 m</span></button>
+      <button class="wbtn" data-w="moab">MOAB<span>✈️ largage · r 420 m</span></button>
+      <button class="wbtn" data-w="nuke">NUKE-T<span>ogive · r 950 m</span></button>
+    </div>
+    <div class="sect">THÉÂTRE D'OPÉRATIONS</div>
+    <button data-go="paris">Paris</button>
+    <button data-go="newyork">New York</button>
+    <button data-go="sf">San Francisco</button>
+    <button data-go="tokyo">Tokyo</button>
+    <button data-go="dubai">Dubaï</button>
+    <div class="hint">CLIC GAUCHE : FEU · glisser : déplacer · clic droit : pivoter · molette : zoom</div>
+  </div>
+  <div id="status">init…</div>
+  <div id="coords">EN ATTENTE DE CIBLE</div>
+
+  <script type="module">
+    import * as THREE from "three";
+    import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+
+    const statusEl = document.getElementById("status");
+    const setStatus = (t) => { statusEl.textContent = t; };
+
+    // Horloge partagée par tous les shaders (secondes depuis le chargement)
+    const T0 = performance.now();
+    const now = () => (performance.now() - T0) / 1000;
+
+    // ── Armes : de simples presets de paramètres ────────────────────────────
+    // r = rayon de souffle (m, ordres de grandeur type NUKEMAP) → zone de suie.
+    // crater = demi-taille du decal de cratère (m), DÉCOUPLÉ du souffle :
+    // ~3× la réalité pour rester lisible à notre altitude (un vrai cratère de
+    // missile fait ~10 m ; la MOAB explose en l'air → cratère minime).
+    // delivery = le VECTEUR : chaque arme a sa mise en scène de livraison.
+    const WEAPONS = {
+      mk1:  { name: "Missile MK-1",        delivery: "missile", r: 150, crater: 42,  flight: 1100, flash: 0.55, shake: 14, smoke: 26, debris: 70 },
+      rkt:  { name: "Roquettes AGR-20",    delivery: "heli",    r: 40,  crater: 16,  count: 8, spacing: 55, flash: 0.2, shake: 5, smoke: 8, debris: 22 },
+      moab: { name: "MOAB GBU-43",         delivery: "jet",     r: 420, crater: 65,  flight: 1500, flash: 0.85, shake: 26, smoke: 44, debris: 110 },
+      nuke: { name: "Nucléaire tactique",  delivery: "ogive",   r: 950, crater: 140, flight: 2100, flash: 1.6,  shake: 44, smoke: 80, debris: 170 },
+    };
+    let currentWeapon = "mk1";
+    const SHAKE_SCALE = 0.3;   // 0 = shake désactivé, 1 = pleine puissance
+
+    // Frappes : coordonnées mercator ABSOLUES (doubles JS) ; les meshes
+    // d'effets sont repositionnés relativement à l'origine courante.
+    const impacts = [];
+
+    // ── Carte : vue satellite pure. La photo aérienne EST le réalisme ; la
+    //    caméra plafonne à 35° de pitch pour que l'absence de 3D soit
+    //    indétectable (cadrage "satellite militaire / drone d'altitude").
+    const map = new maplibregl.Map({
+      container: "map",
+      style: {
+        version: 8,
+        sources: {
+          satellite: {
+            type: "raster",
+            tiles: ["https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"],
+            tileSize: 256, maxzoom: 19,
+            attribution: "Imagery © Esri, Maxar, Earthstar Geographics",
+          },
+        },
+        layers: [{ id: "satellite", type: "raster", source: "satellite" }],
+      },
+      center: [2.2945, 48.8584], zoom: 15.8, pitch: 30, bearing: -15,
+      maxPitch: 35, maxZoom: 17.5, minZoom: 2.5,
+      antialias: true,
+    });
+    map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), "top-right");
+    map.doubleClickZoom.disable();   // double-clic = 2 missiles, pas un zoom surprise
+
+    // ── Shaders des effets au sol (partagés par toutes les frappes) ─────────
+    const QUAD_VERT = `
+      varying vec2 vUv;
+      void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`;
+
+    const NOISE_GLSL = `
+      float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7)))*43758.5453); }
+      float noise(vec2 p){
+        vec2 i = floor(p), f = fract(p); f = f*f*(3.0-2.0*f);
+        return mix(mix(hash(i), hash(i+vec2(1,0)), f.x),
+                   mix(hash(i+vec2(0,1)), hash(i+vec2(1,1)), f.x), f.y);
+      }`;
+
+    // Cratère + zone sinistrée : dessinés par MAPLIBRE lui-même (image
+    // sources géoréférencées) — pas par Three. Une image posée par ses 4
+    // coins devient une couche de la carte, comme les tuiles satellite :
+    // fiable, native, zéro bagarre de z-buffer avec le contexte partagé.
+    let decalSeq = 0;
+    function addMapDecals(im) {
+      if (!window.DECALS || !map.getLayer("fx-three")) return;
+      const mpu = new maplibregl.MercatorCoordinate(im.mx, im.my, 0).meterInMercatorCoordinateUnits();
+      // 4 coins (TL,TR,BR,BL) d'un carré tourné de rot, demi-côté halfM mètres
+      const corners = (halfM, rot) => {
+        const c = Math.cos(rot), s = Math.sin(rot), h = halfM * mpu;
+        return [[-h, -h], [h, -h], [h, h], [-h, h]].map(([x, y]) => {
+          const ll = new maplibregl.MercatorCoordinate(
+            im.mx + x * c - y * s, im.my + x * s + y * c, 0).toLngLat();
+          return [ll.lng, ll.lat];
+        });
+      };
+      im.decalIds = [];
+      const add = (kind, url, halfM, rot, opacity) => {
+        const id = `decal-${kind}-${decalSeq++}`;
+        map.addSource(id, { type: "image", url, coordinates: corners(halfM, rot) });
+        map.addLayer({
+          id, type: "raster", source: id,
+          paint: {
+            "raster-opacity": 0,
+            "raster-opacity-transition": { duration: 900 },
+            "raster-fade-duration": 0,
+          },
+        }, "fx-three");   // sous les effets Three (feux/fumée par-dessus)
+        setTimeout(() => map.getLayer(id) && map.setPaintProperty(id, "raster-opacity", opacity), 80);
+        im.decalIds.push(id);
+      };
+      add("soot", window.DECALS.soot, im.rM * 1.8, im.seed * 2.39996, 0.85);
+      const ci = Math.floor((im.seed % 1) * window.DECALS.craters.length) % window.DECALS.craters.length;
+      add("crater", window.DECALS.craters[ci], im.craterM, im.seed * 5.13, 0.97);
+    }
+
+    // Flash au sol + onde de choc + feux qui brûlent (blending additif).
+    const FX_FRAG = `
+      precision highp float;
+      varying vec2 vUv;
+      uniform float uTime, uT0, uSeed;
+      ${NOISE_GLSL}
+      void main(){
+        vec2 p = (vUv - 0.5) * 4.0;
+        float d = length(p);
+        float age = uTime - uT0;
+        if (age <= 0.0) { gl_FragColor = vec4(0.0); return; }
+        // flash thermique au sol
+        float flash = exp(-age*6.0) * (1.0 - smoothstep(0.0, 1.4, d));
+        // onde de choc principale : lente et large, on a le temps de la voir
+        float rr = (age - 0.02) * 1.15;
+        float ring = exp(-pow((d - rr)*6.0, 2.0)) * exp(-age*0.85) * step(0.0, rr);
+        // écho secondaire encore plus lent (double détente, très "film de guerre")
+        float rr2 = (age - 0.30) * 0.72;
+        float ring2 = exp(-pow((d - rr2)*9.0, 2.0)) * exp(-age*0.95) * step(0.0, rr2);
+        // foyers d'incendie : cellules aléatoires dans l'anneau des dégâts
+        vec2 cell = floor(p*7.0);
+        vec2 fc = fract(p*7.0) - 0.5;
+        float hasF = step(0.60, hash(cell + uSeed)) * step(d, 0.78) * step(0.10, d);
+        float flick = 0.55 + 0.45*sin(uTime*11.0 + hash(cell)*40.0);
+        float flame = hasF * flick * smoothstep(0.5, 0.12, length(fc));
+        float burn = exp(-max(age - 4.0, 0.0) / 180.0);          // brûle ~3 min
+        float ignite = clamp((age - 0.25)/0.8, 0.0, 1.0);
+        vec3 col = vec3(1.0,0.95,0.8)*flash*1.5
+                 + vec3(1.0,0.72,0.38)*ring*2.0
+                 + vec3(1.0,0.58,0.28)*ring2*1.1
+                 + vec3(1.0,0.45,0.08)*flame*burn*ignite*1.3;
+        // halo ambiant orangé qui palpite au-dessus de la zone
+        col += vec3(1.0,0.35,0.05) * (1.0 - smoothstep(0.0,0.9,d)) * 0.10
+             * burn * ignite * (0.8 + 0.2*sin(uTime*7.0 + uSeed));
+        gl_FragColor = vec4(col, 1.0);
+      }`;
+
+    // Fumée : Points animés 100 % dans le shader (aucune maj CPU par frame).
+    const SMOKE_VERT = `
+      attribute float aSeed;
+      uniform float uTime, uT0;
+      uniform vec2 uViewport;
+      varying float vA, vU;
+      void main(){
+        float cyc = 9.0;
+        float speed = 0.6 + 0.5*fract(aSeed*7.31);
+        float t = mod((uTime - uT0)*speed + aSeed*cyc, cyc);
+        float u = t / cyc;
+        float ang = aSeed*6.28318;
+        float rad = (0.12 + 0.5*fract(aSeed*13.7)) * (1.0 + u*1.8);
+        vec3 pos = vec3(cos(ang)*rad, sin(ang)*rad, 0.03 + u*2.4);
+        pos.x += u*u*0.8;                                  // dérive du vent
+        float age = uTime - uT0;
+        vA = smoothstep(0.02,0.12,u) * (1.0 - smoothstep(0.5,1.0,u));
+        vA *= clamp(age/1.5, 0.0, 1.0) * clamp(1.0 - (age-160.0)/50.0, 0.0, 1.0);
+        vA *= step(t, max(age,0.0)*speed);                 // la colonne pousse depuis le sol
+        vU = u;
+        vec4 c0 = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
+        float sz = mix(0.22, 1.0, u);
+        vec4 c1 = projectionMatrix * modelViewMatrix * vec4(pos + vec3(sz,0.0,0.0), 1.0);
+        gl_Position = c0;
+        vec2 px = (c1.xy/c1.w - c0.xy/c0.w) * uViewport * 0.5;
+        gl_PointSize = clamp(length(px), 2.0, 420.0);
+      }`;
+    const SMOKE_FRAG = `
+      precision highp float;
+      varying float vA, vU;
+      void main(){
+        vec2 q = gl_PointCoord - 0.5;
+        float m = smoothstep(0.5, 0.10, length(q));
+        // orange en bas (éclairée par le feu) -> gris sombre en montant
+        vec3 col = mix(vec3(0.9,0.45,0.14), vec3(0.16,0.15,0.15), clamp(vU*2.6, 0.0, 1.0));
+        gl_FragColor = vec4(col, m * vA * 0.42);
+      }`;
+
+    // Débris balistiques : éjectés en arc depuis l'impact, retombent puis
+    // s'estompent. Trajectoire 100 % shader (aucune maj CPU par frame).
+    const DEBRIS_VERT = `
+      attribute float aSeed;
+      uniform float uTime, uT0, uRM;
+      uniform vec2 uViewport;
+      varying float vA; varying vec3 vCol;
+      void main(){
+        float age = max(uTime - uT0, 0.0);
+        float r1 = fract(aSeed*13.7), r2 = fract(aSeed*7.31);
+        float r3 = fract(aSeed*3.17), r4 = fract(aSeed*23.9);
+        float ang = aSeed*6.28318;
+        float R = 0.35 + 1.15*r1;            // portée (en rayons d'arme)
+        float T = 0.7 + 1.1*r2;              // temps de vol (s)
+        float u = clamp(age/T, 0.0, 1.0);
+        float uh = 1.0 - (1.0-u)*(1.0-u);    // décélération horizontale
+        vec3 pos = vec3(cos(ang)*R*uh, sin(ang)*R*uh,
+                        0.005 + (0.12 + 0.45*r3) * 4.0*u*(1.0-u));  // parabole
+        float szM = 1.2 + 2.6*r4;            // taille réelle : 1 à 4 m
+        float sz = szM / uRM;
+        // au sol quelques secondes, puis disparition
+        vA = (1.0 - smoothstep(T + 2.5, T + 7.0, age)) * step(0.001, age);
+        // fraction de braises chaudes qui refroidissent en vol
+        float hot = step(0.62, r3) * exp(-age/1.4);
+        vCol = mix(vec3(0.30,0.27,0.24), vec3(1.0,0.55,0.15), hot);
+        vec4 c0 = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
+        vec4 c1 = projectionMatrix * modelViewMatrix * vec4(pos + vec3(sz,0.0,0.0), 1.0);
+        gl_Position = c0;
+        vec2 px = (c1.xy/c1.w - c0.xy/c0.w) * uViewport * 0.5;
+        gl_PointSize = clamp(length(px), 1.5, 64.0);
+      }`;
+    const DEBRIS_FRAG = `
+      precision highp float;
+      varying float vA; varying vec3 vCol;
+      void main(){
+        vec2 q = gl_PointCoord - 0.5;
+        float m = smoothstep(0.5, 0.25, length(q));
+        gl_FragColor = vec4(vCol, m * vA * 0.95);
+      }`;
+
+    // Traînées d'aéronefs : ring-buffer de positions passées, points qui se
+    // dispersent et s'estompent (contrail blanc, plasma d'ogive…).
+    const TRAIL_VERT = `
+      attribute float aBirth;
+      uniform float uTime, uLife, uSizeM, uMpu;
+      uniform vec2 uViewport;
+      varying float vA;
+      void main(){
+        float age = (uTime - aBirth) / uLife;
+        vA = aBirth < 0.0 ? 0.0 : clamp(1.0 - age, 0.0, 1.0);
+        float grow = 1.0 + (1.0 - vA) * 1.7;          // le panache se disperse
+        vec4 c0 = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        vec4 c1 = projectionMatrix * modelViewMatrix * vec4(position + vec3(uSizeM * uMpu * grow, 0.0, 0.0), 1.0);
+        gl_Position = c0;
+        vec2 px = (c1.xy / c1.w - c0.xy / c0.w) * uViewport * 0.5;
+        gl_PointSize = clamp(length(px), 1.0, 72.0);
+      }`;
+    const TRAIL_FRAG = `
+      precision highp float;
+      uniform vec3 uColor;
+      varying float vA;
+      void main(){
+        vec2 q = gl_PointCoord - 0.5;
+        float m = smoothstep(0.5, 0.15, length(q));
+        gl_FragColor = vec4(uColor, m * vA * 0.4);
+      }`;
+
+    // Disque de rotor : pales floues qui tournent (illusion vue du dessus —
+    // les GLB sont des mesh fusionnés, impossible d'animer la vraie pale).
+    const ROTOR_FRAG = `
+      precision highp float;
+      varying vec2 vUv;
+      uniform float uTime;
+      void main(){
+        vec2 p = vUv - 0.5;
+        float r = length(p) * 2.0;
+        float a = atan(p.y, p.x);
+        float blades = pow(abs(sin(a * 2.0 - uTime * 26.0)), 8.0);   // 4 pales
+        float alpha = (0.10 + 0.55 * blades) * smoothstep(1.0, 0.90, r) * step(0.12, r);
+        gl_FragColor = vec4(vec3(0.12, 0.12, 0.13), alpha);
+      }`;
+
+
+    // ── Custom layer Three.js : uniquement les effets de frappe ─────────────
+    const fxLayer = {
+      id: "fx-three",
+      type: "custom",
+      renderingMode: "3d",
+      origin: null,
+      mPerUnit: 1,
+
+      onAdd(map, gl) {
+        this.map = map;
+        this.camera = new THREE.Camera();
+        this.scene = new THREE.Scene();
+        this.renderer = new THREE.WebGLRenderer({ canvas: map.getCanvas(), context: gl, antialias: true });
+        this.renderer.autoClear = false;
+        this._quadGeo = new THREE.PlaneGeometry(4, 4);      // FX (flash/anneaux/feux)
+        // lumières pour les modèles GLB (matériaux standards)
+        this.scene.add(new THREE.HemisphereLight(0xffffff, 0x8a9099, 2.4));
+        const sun = new THREE.DirectionalLight(0xfff2dd, 2.2);
+        sun.position.set(0.6, -0.4, 0.8);
+        this.scene.add(sun);
+        this.aircraft = [];
+        this._lookTmp = new THREE.Vector3();
+        this._updateOrigin();
+        map.on("moveend", () => this._updateOrigin());
+      },
+
+      addAircraft(craft) {
+        craft.obj.traverse((c) => { c.frustumCulled = false; });
+        this.scene.add(craft.obj);
+        if (craft.rotor) this.scene.add(craft.rotor);   // disque de rotor (overlay plat)
+        // traînée : ring-buffer de positions absolues (mercator, doubles JS)
+        if (craft.trail) {
+          const N = 42;
+          const geo = new THREE.BufferGeometry();
+          geo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(N * 3), 3));
+          geo.setAttribute("aBirth", new THREE.BufferAttribute(new Float32Array(N).fill(-1), 1));
+          const mat = new THREE.ShaderMaterial({
+            vertexShader: TRAIL_VERT, fragmentShader: TRAIL_FRAG,
+            transparent: true, depthWrite: false, depthTest: false,
+            blending: craft.trail.add ? THREE.AdditiveBlending : THREE.NormalBlending,
+            uniforms: {
+              uTime: { value: 0 }, uLife: { value: craft.trail.life },
+              uSizeM: { value: craft.trail.sizeM }, uMpu: { value: 1 },
+              uViewport: { value: new THREE.Vector2(1, 1) },
+              uColor: { value: new THREE.Color(craft.trail.color) },
+            },
+          });
+          const pts = new THREE.Points(geo, mat);
+          pts.frustumCulled = false; pts.renderOrder = 5;
+          this.scene.add(pts);
+          craft._trail = { obj: pts, geo, mat, abs: new Float64Array(N * 3), head: 0, last: -1, N };
+        }
+        this.aircraft.push(craft);
+        map.triggerRepaint();
+      },
+
+      // L'origine mercator locale suit la caméra (précision float32 des shaders).
+      _updateOrigin() {
+        const origin = maplibregl.MercatorCoordinate.fromLngLat(map.getCenter(), 0);
+        this.origin = origin;
+        this.mPerUnit = origin.meterInMercatorCoordinateUnits();
+        this._placeImpacts();
+        map.triggerRepaint();
+      },
+
+      // (Re)positionne les quads d'effets — l'origine mercator a pu changer.
+      _placeImpacts() {
+        if (!this.origin) return;
+        const o = this.origin, mpu = this.mPerUnit;
+        for (const im of impacts) {
+          if (!im.group) continue;
+          const s = im.rM * mpu;   // le quad 4×4 couvre ±2 rayons
+          im.group.position.set(im.mx - o.x, im.my - o.y, 0.4 * mpu);
+          im.group.scale.set(s, s, s);
+        }
+      },
+
+      // Crée FX + fumée + débris pour une frappe (les decals sont côté MapLibre).
+      addImpact(im) {
+        const mkMat = (frag, blending) => new THREE.ShaderMaterial({
+          vertexShader: QUAD_VERT, fragmentShader: frag,
+          transparent: true, depthWrite: false, depthTest: false, blending,
+          uniforms: { uTime: { value: now() }, uT0: { value: im.t0 }, uSeed: { value: im.seed } },
+        });
+        const fxMat = mkMat(FX_FRAG, THREE.AdditiveBlending);
+        const smokeMat = new THREE.ShaderMaterial({
+          vertexShader: SMOKE_VERT, fragmentShader: SMOKE_FRAG,
+          transparent: true, depthWrite: false, depthTest: false, blending: THREE.NormalBlending,
+          uniforms: {
+            uTime: { value: now() }, uT0: { value: im.t0 },
+            uViewport: { value: new THREE.Vector2(1, 1) },
+          },
+        });
+
+        const debrisMat = new THREE.ShaderMaterial({
+          vertexShader: DEBRIS_VERT, fragmentShader: DEBRIS_FRAG,
+          transparent: true, depthWrite: false, depthTest: false, blending: THREE.NormalBlending,
+          uniforms: {
+            uTime: { value: now() }, uT0: { value: im.t0 }, uRM: { value: im.rM },
+            uViewport: { value: new THREE.Vector2(1, 1) },
+          },
+        });
+
+        const mkPoints = (n) => {
+          const geo = new THREE.BufferGeometry();
+          geo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(n * 3), 3));
+          const seeds = new Float32Array(n);
+          for (let i = 0; i < n; i++) seeds[i] = Math.random();
+          geo.setAttribute("aSeed", new THREE.BufferAttribute(seeds, 1));
+          return geo;
+        };
+
+        const g = new THREE.Group();
+        const fx = new THREE.Mesh(this._quadGeo, fxMat);
+        fx.position.z = 0.0016; fx.renderOrder = 12;
+        const smoke = new THREE.Points(mkPoints(im.smoke), smokeMat);
+        smoke.renderOrder = 13;
+        const debris = new THREE.Points(mkPoints(im.debris), debrisMat);
+        debris.renderOrder = 14;
+        fx.frustumCulled = smoke.frustumCulled = debris.frustumCulled = false;
+        g.add(fx, smoke, debris);
+
+        im.group = g;
+        im.mats = [fxMat, smokeMat, debrisMat];
+        this.scene.add(g);
+        this._placeImpacts();
+
+        // Cap mémoire : au-delà de 40 frappes, on retire les plus anciennes
+        // (meshes Three + couches decal MapLibre).
+        while (impacts.length > 40) {
+          const old = impacts.shift();
+          if (old.group) {
+            this.scene.remove(old.group);
+            old.group.children.forEach((c) => { if (c.geometry !== this._quadGeo) c.geometry.dispose(); });
+            old.mats.forEach((m) => m.dispose());
+          }
+          (old.decalIds || []).forEach((id) => {
+            if (map.getLayer(id)) map.removeLayer(id);
+            if (map.getSource(id)) map.removeSource(id);
+          });
+        }
+      },
+
+      render(gl, matrixArg) {
+        if (!this.origin) return;
+        const arr = Array.isArray(matrixArg) ? matrixArg
+          : (matrixArg && matrixArg.defaultProjectionData ? matrixArg.defaultProjectionData.mainMatrix : matrixArg);
+        const m = new THREE.Matrix4().fromArray(arr);
+        const l = new THREE.Matrix4().makeTranslation(this.origin.x, this.origin.y, 0);
+        this.camera.projectionMatrix = m.multiply(l);
+
+        const t = now();
+        const vw = gl.drawingBufferWidth, vh = gl.drawingBufferHeight;
+        for (const im of impacts) {
+          if (!im.mats) continue;
+          for (const mt of im.mats) {
+            mt.uniforms.uTime.value = t;
+            if (mt.uniforms.uViewport) mt.uniforms.uViewport.value.set(vw, vh);
+          }
+        }
+
+        // ── Aéronefs : positions absolues (mercator) → relatives à l'origine
+        const o = this.origin, mpu = this.mPerUnit;
+        for (let i = this.aircraft.length - 1; i >= 0; i--) {
+          const a = this.aircraft[i];
+          if (!a.update(t)) {
+            this.scene.remove(a.obj);
+            if (a.rotor) this.scene.remove(a.rotor);
+            if (a._trail) {
+              this.scene.remove(a._trail.obj);
+              a._trail.geo.dispose(); a._trail.mat.dispose();
+            }
+            this.aircraft.splice(i, 1);
+            continue;
+          }
+          a.obj.position.set(a.mx - o.x, a.my - o.y, a.zM * mpu);
+          a.obj.scale.setScalar(a.lenM * mpu);
+          // disque de rotor : posé à plat (plan XY, normale +Z = haut), spin en shader
+          if (a.rotor) {
+            a.rotor.position.set(a.mx - o.x, a.my - o.y, (a.zM + a.rotorLiftM) * mpu);
+            a.rotor.scale.setScalar(a.rotorM * mpu);
+          }
+          if (a.orient3d) {
+            // plongée : le nez suit le vecteur vitesse 3D (ogive)
+            const v = a.orient3d;
+            this._lookTmp.set(a.obj.position.x + v.x * mpu, a.obj.position.y + v.y * mpu,
+                              a.obj.position.z + v.z * mpu);
+            a.obj.lookAt(this._lookTmp);
+          } else {
+            // vol horizontal : +Y modèle → haut, nez → cap (hx, hy)
+            a.obj.rotation.set(Math.PI / 2, 0, Math.atan2(a.hx, -a.hy), "ZXY");
+          }
+          // matériaux animés embarqués (disque de rotor…)
+          if (a.animMats) for (const m of a.animMats) m.uniforms.uTime.value = t;
+          // traînée : échantillonne la position, réécrit le buffer relatif
+          const tr = a._trail;
+          if (tr) {
+            if (t - tr.last > 0.09) {
+              tr.last = t;
+              const h = tr.head; tr.head = (h + 1) % tr.N;
+              tr.abs[h * 3] = a.mx; tr.abs[h * 3 + 1] = a.my; tr.abs[h * 3 + 2] = a.zM;
+              tr.geo.attributes.aBirth.array[h] = t;
+              tr.geo.attributes.aBirth.needsUpdate = true;
+            }
+            const pos = tr.geo.attributes.position.array;
+            for (let k = 0; k < tr.N; k++) {
+              pos[k * 3] = tr.abs[k * 3] - o.x;
+              pos[k * 3 + 1] = tr.abs[k * 3 + 1] - o.y;
+              pos[k * 3 + 2] = tr.abs[k * 3 + 2] * mpu;
+            }
+            tr.geo.attributes.position.needsUpdate = true;
+            tr.mat.uniforms.uTime.value = t;
+            tr.mat.uniforms.uMpu.value = mpu;
+            tr.mat.uniforms.uViewport.value.set(vw, vh);
+          }
+        }
+
+        this.renderer.resetState();
+        this.renderer.render(this.scene, this.camera);
+
+        // Feux qui brûlent + trafic aérien mondial → rendu continu
+        if (impacts.length || this.aircraft.length) map.triggerRepaint();
+      },
+    };
+
+    window.__fx = fxLayer;   // debug console
+    map.on("load", () => {
+      try { map.addLayer(fxLayer); setStatus("console armée — clic gauche pour tirer"); }
+      catch (e) { setStatus("err addLayer: " + e.message); }
+    });
+    map.on("error", (e) => setStatus("MAP-ERROR: " + (e && e.error && e.error.message)));
+
+    // ── Audio procédural (WebAudio, zéro asset) ─────────────────────────────
+    let actx = null, master = null;
+    function audio() {
+      if (!actx) {
+        actx = new (window.AudioContext || window.webkitAudioContext)();
+        master = actx.createGain(); master.gain.value = 0.6;
+        master.connect(actx.destination);
+      }
+      if (actx.state === "suspended") actx.resume();
+      return actx;
+    }
+    function whistle(dur) {
+      if (!isFinite(dur) || dur <= 0) dur = 1.2;   // garde-fou : jamais de NaN vers WebAudio
+      const c = audio(), t = c.currentTime;
+      const o = c.createOscillator(), g = c.createGain();
+      o.type = "sine";
+      o.frequency.setValueAtTime(1500, t);
+      o.frequency.exponentialRampToValueAtTime(240, t + dur);
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(0.10, t + dur * 0.35);
+      g.gain.exponentialRampToValueAtTime(0.015, t + dur);
+      o.connect(g).connect(master);
+      o.start(t); o.stop(t + dur + 0.05);
+    }
+    function boom(w) {
+      const c = audio(), t = c.currentTime;
+      const vol = Math.min(1, 0.3 + w.r / 600);   // petites munitions = petits booms
+      const dur = 2.2 + w.r / 350;
+      // souffle : rafale de bruit filtrée passe-bas descendante
+      const buf = c.createBuffer(1, Math.floor(c.sampleRate * dur), c.sampleRate);
+      const d = buf.getChannelData(0);
+      for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / d.length, 2.2);
+      const src = c.createBufferSource(); src.buffer = buf;
+      const f = c.createBiquadFilter(); f.type = "lowpass";
+      f.frequency.setValueAtTime(900, t);
+      f.frequency.exponentialRampToValueAtTime(55, t + dur);
+      const g = c.createGain(); g.gain.value = 0.9 * vol;
+      src.connect(f).connect(g).connect(master); src.start(t);
+      // infrabasse
+      const o = c.createOscillator(); o.type = "sine";
+      o.frequency.setValueAtTime(62, t);
+      o.frequency.exponentialRampToValueAtTime(24, t + 1.6);
+      const g2 = c.createGain();
+      g2.gain.setValueAtTime(0.8 * vol, t);
+      g2.gain.exponentialRampToValueAtTime(0.001, t + 1.9);
+      o.connect(g2).connect(master); o.start(t); o.stop(t + 2);
+    }
+
+    // ── Feedback écran : lueur ambrée + shake ───────────────────────────────
+    const flashEl = document.getElementById("flash");
+    function flashFx(s) {
+      // lueur ambrée discrète — pas d'écran blanc qui crame la rétine
+      flashEl.style.transition = "none";
+      flashEl.style.opacity = String(Math.min(0.32, s * 0.2));
+      void flashEl.offsetWidth;
+      flashEl.style.transition = `opacity ${(0.45 + s * 0.35).toFixed(2)}s ease-out`;
+      flashEl.style.opacity = "0";
+    }
+    function shake(amp) {
+      amp *= SHAKE_SCALE;
+      if (amp <= 0) return;
+      const el = document.getElementById("map"), t0 = performance.now();
+      (function s() {
+        const e = (performance.now() - t0) / 700;
+        if (e >= 1) { el.style.transform = ""; return; }
+        const a = amp * (1 - e) * (1 - e);
+        el.style.transform = `translate(${(Math.random() * 2 - 1) * a}px, ${(Math.random() * 2 - 1) * a}px)`;
+        requestAnimationFrame(s);
+      })();
+    }
+
+    // ── Modèles GLB : normalisés (plus grande dimension = 1 unité, centrés,
+    //    nez glTF = +Z). Échelle finale appliquée par aéronef en mètres.
+    const MODELS = { jet: null, heli: null, airliner: null };
+    const gltfLoader = new GLTFLoader();
+    function loadModel(key, dataUrl, cb) {
+      if (!dataUrl) return;
+      fetch(dataUrl).then((r) => r.arrayBuffer()).then((buf) => {
+        gltfLoader.parse(buf, "", (g) => {
+          const obj = g.scene;
+          const box = new THREE.Box3().setFromObject(obj);
+          const size = box.getSize(new THREE.Vector3());
+          const s = 1 / Math.max(size.x, size.y, size.z);
+          obj.scale.setScalar(s);
+          const c = box.getCenter(new THREE.Vector3()).multiplyScalar(s);
+          obj.position.sub(c);
+          // le z-buffer de MapLibre rejette nos objets (cf. decals) :
+          // on désactive le test de profondeur sur tous les matériaux
+          obj.traverse((n) => {
+            if (n.isMesh && n.material) {
+              n.material.depthTest = false;
+              n.material.depthWrite = false;
+            }
+          });
+          const wrap = new THREE.Group();
+          wrap.add(obj);
+          MODELS[key] = wrap;
+          if (cb) cb();
+        }, () => setStatus("err GLB " + key));
+      });
+    }
+
+    // ── Trafic aérien mondial : avions de ligne sur de VRAIES routes ───────
+    // Grands cercles entre villes réelles, vitesse réelle (~870 km/h) : les
+    // avions existent dans le monde en continu, on les croise s'ils passent.
+    const CITIES = [
+      [2.55, 49.01], [-0.45, 51.47], [-73.78, 40.64], [-118.41, 33.94],
+      [139.78, 35.55], [55.36, 25.25], [103.99, 1.36], [151.18, -33.95],
+      [-46.47, -23.43], [28.24, -26.13], [37.41, 55.97], [116.59, 40.08],
+      [77.10, 28.56], [28.75, 41.28], [31.41, 30.12], [-99.07, 19.44],
+      [-79.63, 43.68], [8.57, 50.03], [-3.57, 40.47], [100.75, 13.69],
+      [126.45, 37.47], [-58.54, -34.82], [3.32, 6.58], [12.25, 41.80],
+    ];
+    const D2R = Math.PI / 180;
+    const cityVec = ([lng, lat]) => {
+      const la = lat * D2R, lo = lng * D2R;
+      return [Math.cos(la) * Math.cos(lo), Math.cos(la) * Math.sin(lo), Math.sin(la)];
+    };
+    // point du grand cercle entre a et b à la fraction f (slerp sphérique)
+    function gcLngLat(va, vb, f) {
+      const dot = Math.max(-1, Math.min(1, va[0]*vb[0] + va[1]*vb[1] + va[2]*vb[2]));
+      const ang = Math.acos(dot);
+      if (ang < 1e-6) return va;
+      const s1 = Math.sin((1 - f) * ang) / Math.sin(ang), s2 = Math.sin(f * ang) / Math.sin(ang);
+      const v = [va[0]*s1 + vb[0]*s2, va[1]*s1 + vb[1]*s2, va[2]*s1 + vb[2]*s2];
+      return { lng: Math.atan2(v[1], v[0]) / D2R, lat: Math.asin(Math.max(-1, Math.min(1, v[2]))) / D2R };
+    }
+    function spawnAirliner(startRandom) {
+      if (!MODELS.airliner || !fxLayer.scene) return;
+      let ai = Math.floor(Math.random() * CITIES.length), bi;
+      do { bi = Math.floor(Math.random() * CITIES.length); } while (bi === ai);
+      const va = cityVec(CITIES[ai]), vb = cityVec(CITIES[bi]);
+      const ang = Math.acos(Math.max(-1, Math.min(1, va[0]*vb[0] + va[1]*vb[1] + va[2]*vb[2])));
+      const distM = ang * 6371000;
+      const f0 = startRandom ? Math.random() : 0;
+      const t0 = now(), SPD = 242;              // ~870 km/h
+      const craft = {
+        obj: MODELS.airliner.clone(), lenM: 92, mx: 0, my: 0, zM: 1700, hx: 1, hy: 0,
+        trail: { sizeM: 15, life: 7.5, color: 0xf4f7fa },     // contrail
+        update(t) {
+          const f = f0 + ((t - t0) * SPD) / distM;
+          if (f >= 1) { spawnAirliner(false); return false; }   // arrivé → nouvelle route
+          const p1 = gcLngLat(va, vb, f), p2 = gcLngLat(va, vb, Math.min(1, f + 0.0004));
+          const m1 = maplibregl.MercatorCoordinate.fromLngLat([p1.lng, p1.lat], 0);
+          const m2 = maplibregl.MercatorCoordinate.fromLngLat([p2.lng, p2.lat], 0);
+          this.mx = m1.x; this.my = m1.y;
+          const l = Math.hypot(m2.x - m1.x, m2.y - m1.y) || 1;
+          this.hx = (m2.x - m1.x) / l; this.hy = (m2.y - m1.y) / l;
+          return true;
+        },
+      };
+      fxLayer.addAircraft(craft);
+    }
+    loadModel("airliner", window.MODELS_B64 && window.MODELS_B64.airliner, () => {
+      const boot = () => { for (let i = 0; i < 14; i++) spawnAirliner(true); };
+      if (fxLayer.scene) boot(); else map.on("load", () => setTimeout(boot, 500));
+    });
+    loadModel("jet", window.MODELS_B64 && window.MODELS_B64.jet);
+    loadModel("heli", window.MODELS_B64 && window.MODELS_B64.heli);
+
+    // ── Vecteurs de frappe ──────────────────────────────────────────────────
+    // ✈️ MOAB : le jet traverse en rase-mottes, largue, la bombe tombe → boum.
+    function spawnJetStrike(tgt, w) {
+      if (!MODELS.jet || !fxLayer.scene) return missileStrike(tgt, w);
+      const mc = maplibregl.MercatorCoordinate.fromLngLat([tgt.lng, tgt.lat], 0);
+      const mpu = mc.meterInMercatorCoordinateUnits();
+      const th = Math.random() * Math.PI * 2;
+      const dx = Math.cos(th), dy = Math.sin(th);
+      const SPD = 520, ALT = 340, SPAWN = 3100, RELEASE = 430;
+      const t0 = now();
+      const jet = {
+        obj: MODELS.jet.clone(), lenM: 34, mx: 0, my: 0, zM: ALT, hx: dx, hy: dy,
+        trail: { sizeM: 8, life: 2.4, color: 0xeef1f5 },
+        released: false,
+        update(t) {
+          const d = -SPAWN + (t - t0) * SPD;      // distance signée à la cible (m)
+          this.mx = mc.x + dx * d * mpu; this.my = mc.y + dy * d * mpu;
+          if (!this.released && d >= -RELEASE) { this.released = true; drop(); }
+          return d < 2800;
+        },
+      };
+      fxLayer.addAircraft(jet);
+      function drop() {
+        whistle(1.6);
+        const tb = now();
+        const bomb = {
+          obj: mkBombMesh(), lenM: 11, mx: 0, my: 0, zM: ALT, hx: dx, hy: dy,
+          update(t) {
+            const u = Math.min(1, (t - tb) / 1.6);
+            const d = -RELEASE * (1 - u) * (1 - u);   // décélère à l'horizontale
+            this.mx = mc.x + dx * d * mpu; this.my = mc.y + dy * d * mpu;
+            this.zM = ALT * (1 - u * u);              // chute accélérée
+            if (u >= 1) { detonate(tgt, w); return false; }
+            return true;
+          },
+        };
+        fxLayer.addAircraft(bomb);
+      }
+    }
+    function mkBombMesh() {
+      const mat = new THREE.MeshStandardMaterial({ color: 0x3d4438, roughness: 0.55,
+        depthTest: false, depthWrite: false });
+      const g = new THREE.Group();
+      const body = new THREE.Mesh(new THREE.CylinderGeometry(0.10, 0.10, 0.60, 10), mat);
+      const nose = new THREE.Mesh(new THREE.ConeGeometry(0.10, 0.28, 10), mat);
+      nose.position.y = 0.44;
+      g.add(body, nose);
+      g.rotation.x = Math.PI / 2;                   // nez +Y → +Z (convention nez)
+      const wrap = new THREE.Group(); wrap.add(g);
+      return wrap;
+    }
+
+    // 🚁 Roquettes : l'hélico fait un passage et lâche une rafale en ligne.
+    function spawnHeliStrike(tgt, w) {
+      if (!MODELS.heli || !fxLayer.scene) return missileStrike(tgt, w);
+      const mc = maplibregl.MercatorCoordinate.fromLngLat([tgt.lng, tgt.lat], 0);
+      const mpu = mc.meterInMercatorCoordinateUnits();
+      const th = Math.random() * Math.PI * 2;
+      const dx = Math.cos(th), dy = Math.sin(th);
+      const ALT = 140, SPAWN = 1500, HOVERD = 470;   // stationnaire à 470 m de la cible
+      const APPROACH_SPD = 150, DEPART_SPD = 130;
+      const FIRE_DELAY = 0.4, FIRE_DUR = w.count * 0.18 + 0.5;
+      const tApproach = (SPAWN - HOVERD) / APPROACH_SPD;
+      const tHoverEnd = tApproach + FIRE_DELAY + FIRE_DUR;
+      const t0 = now();
+      let fireT0 = null, fired = 0;
+
+      // disque de rotor : overlay horizontal SÉPARÉ (pas enfant du fuselage
+      // incliné, sinon il passe de profil et disparaît). Animé en shader.
+      const heliObj = MODELS.heli.clone();
+      const rotorMat = new THREE.ShaderMaterial({
+        vertexShader: QUAD_VERT, fragmentShader: ROTOR_FRAG,
+        transparent: true, depthWrite: false, depthTest: false,
+        uniforms: { uTime: { value: 0 } },
+      });
+      const rotor = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), rotorMat);
+      rotor.frustumCulled = false; rotor.renderOrder = 7;
+
+      const heli = {
+        obj: heliObj, lenM: 26, mx: 0, my: 0, zM: ALT, hx: dx, hy: dy,
+        animMats: [rotorMat], rotor, rotorLiftM: 7, rotorM: 26,
+        update(t) {
+          const e = t - t0;
+          let d;   // distance signée à la cible le long de la trajectoire (m)
+          if (e < tApproach) {                          // approche (décélère)
+            const u = e / tApproach, s = 1 - (1 - u) * (1 - u);
+            d = -SPAWN + (SPAWN - HOVERD) * s;
+          } else if (e < tHoverEnd) {                   // stationnaire : rafale
+            d = -HOVERD;
+            if (e - tApproach >= FIRE_DELAY) {
+              if (fireT0 === null) fireT0 = t;
+              while (fired < w.count && t - fireT0 >= fired * 0.18) { fireRocket(fired, this); fired++; }
+            }
+          } else {                                      // départ (accélère)
+            const de = e - tHoverEnd;
+            d = -HOVERD + DEPART_SPD * de + de * de * 6;
+          }
+          this.mx = mc.x + dx * d * mpu; this.my = mc.y + dy * d * mpu;
+          return d < 1200;
+        },
+      };
+      fxLayer.addAircraft(heli);
+      function fireRocket(i, h) {
+        // la rafale marche vers la cible : la dernière roquette tape le clic
+        const off = (i - (w.count - 1)) * w.spacing;
+        const ll = new maplibregl.MercatorCoordinate(
+          mc.x + dx * off * mpu, mc.y + dy * off * mpu, 0).toLngLat();
+        const from = new maplibregl.MercatorCoordinate(h.mx, h.my, 0).toLngLat();
+        const el = document.createElement("div");
+        el.className = "rocket";
+        document.body.appendChild(el);
+        const tr = performance.now(), DUR = 520;
+        (function anim() {
+          const u = Math.min(1, (performance.now() - tr) / DUR);
+          const p = u * u;
+          const a = map.project([from.lng, from.lat]), b = map.project([ll.lng, ll.lat]);
+          const x = a.x + (b.x - a.x) * p, y = a.y + (b.y - a.y) * p;
+          const rot = Math.atan2(b.y - a.y, b.x - a.x) - Math.PI / 2;
+          el.style.transform = `translate(${x}px, ${y}px) rotate(${rot}rad) translate(-1.5px, -38px)`;
+          if (u < 1) requestAnimationFrame(anim);
+          else { el.remove(); detonate({ lng: ll.lng, lat: ll.lat }, w); }
+        })();
+      }
+    }
+
+    // ☢️ NUKE : ogive de rentrée dessinée — plongée raide + lueur de plasma.
+    function spawnOgiveStrike(tgt, w) {
+      if (!fxLayer.scene) return missileStrike(tgt, w);
+      const mc = maplibregl.MercatorCoordinate.fromLngLat([tgt.lng, tgt.lat], 0);
+      const mpu = mc.meterInMercatorCoordinateUnits();
+      const th = Math.random() * Math.PI * 2;
+      const dx = Math.cos(th), dy = Math.sin(th);
+      const H = 2800, BACK = 760, DUR = (w.flight || 2100) / 1000;
+      const t0 = now();
+      whistle(DUR);
+      const vx = dx * (BACK / DUR), vy = dy * (BACK / DUR), vz = -H / DUR; // m/s
+      const rv = {
+        obj: mkOgiveMesh(), lenM: 20, mx: 0, my: 0, zM: H,
+        trail: { sizeM: 11, life: 1.3, color: 0xffa050, add: true },   // plasma
+        orient3d: { x: vx, y: vy, z: vz },
+        update(t) {
+          const u = Math.min(1, (t - t0) / DUR);
+          this.mx = mc.x - dx * BACK * (1 - u) * mpu;
+          this.my = mc.y - dy * BACK * (1 - u) * mpu;
+          this.zM = H * (1 - u);
+          if (u >= 1) { detonate(tgt, w); return false; }
+          return true;
+        },
+      };
+      fxLayer.addAircraft(rv);
+    }
+    function mkOgiveMesh() {
+      const g = new THREE.Group();
+      const cone = new THREE.Mesh(
+        new THREE.ConeGeometry(0.14, 1.0, 12),
+        new THREE.MeshStandardMaterial({ color: 0x14161a, roughness: 0.35, metalness: 0.6,
+          depthTest: false, depthWrite: false }));
+      cone.geometry.rotateX(Math.PI / 2);           // pointe +Y → +Z
+      // lueur de rentrée atmosphérique derrière l'ogive
+      const glow = new THREE.Mesh(
+        new THREE.ConeGeometry(0.17, 1.9, 10),
+        new THREE.MeshBasicMaterial({ color: 0xffa040, transparent: true, opacity: 0.65,
+          blending: THREE.AdditiveBlending, depthWrite: false, depthTest: false }));
+      glow.geometry.rotateX(-Math.PI / 2);
+      glow.position.z = -1.25;
+      g.add(cone, glow);
+      const wrap = new THREE.Group(); wrap.add(g);
+      return wrap;
+    }
+
+    // ── Tir : chaque arme part avec son vecteur ─────────────────────────────
+    function launchStrike(lngLat) {
+      const w = WEAPONS[currentWeapon];
+      const tgt = { lng: lngLat.lng, lat: lngLat.lat };
+      if (w.delivery === "jet") return spawnJetStrike(tgt, w);
+      if (w.delivery === "heli") return spawnHeliStrike(tgt, w);
+      if (w.delivery === "ogive") return spawnOgiveStrike(tgt, w);
+      missileStrike(tgt, w);
+    }
+    // Missile de croisière : élément DOM screen-space (suit la cible même si
+    // la carte bouge — et en multi, un missile visible = interceptable).
+    function missileStrike(tgt, w) {
+      whistle(w.flight / 1000);
+      const el = document.createElement("div");
+      el.className = "missile";
+      document.body.appendChild(el);
+      const t0 = performance.now();
+      (function anim() {
+        const t = Math.min(1, (performance.now() - t0) / w.flight);
+        const p = t * t;                       // accélère en piqué
+        const end = map.project([tgt.lng, tgt.lat]);
+        const sx = end.x + 340, sy = end.y - 620;
+        const x = sx + (end.x - sx) * p, y = sy + (end.y - sy) * p;
+        const rot = Math.atan2(end.y - sy, end.x - sx) - Math.PI / 2;
+        el.style.transform = `translate(${x}px, ${y}px) rotate(${rot}rad) translate(-2px, -84px)`;
+        if (t < 1) requestAnimationFrame(anim);
+        else { el.remove(); detonate(tgt, w); }
+      })();
+    }
+
+    function detonate(lngLat, w) {
+      const key = Object.keys(WEAPONS).find((k) => WEAPONS[k] === w) || "mk1";
+      const mc = maplibregl.MercatorCoordinate.fromLngLat([lngLat.lng, lngLat.lat], 0);
+      const seed = Math.random() * 100;
+      const im = { mx: mc.x, my: mc.y, rM: w.r, craterM: w.crater, t0: now(), smoke: w.smoke, debris: w.debris, seed };
+      impacts.push(im);
+      fxLayer.addImpact(im);
+      addMapDecals(im);          // cratère + suie : couches natives MapLibre
+      addStrikeLabel(lngLat.lng, lngLat.lat, PSEUDO, key);
+      boom(w); flashFx(w.flash); shake(w.shake);
+      // glitch du capteur : réservé aux grosses munitions (pas la rafale)
+      if (w.flash >= 0.4) {
+        const mapEl = document.getElementById("map");
+        mapEl.classList.remove("glitch"); void mapEl.offsetWidth;
+        mapEl.classList.add("glitch");
+      }
+      setStatus(`impact ${w.name} · r ${w.r} m · ${impacts.length} frappe(s)`);
+      map.triggerRepaint();
+      saveStrike({ pseudo: PSEUDO, lng: lngLat.lng, lat: lngLat.lat, weapon: key, seed });
+    }
+
+    // ── Persistance : frappes sauvées côté serveur (Next API + Postgres VPS) ──
+    // Fonctionne quand le jeu est servi par l'app Next ; en file:// les fetch
+    // échouent silencieusement et le jeu reste jouable hors-ligne.
+    let PSEUDO = (localStorage.getItem("nmc_pseudo") || "").trim();
+    function ensurePseudo() {
+      while (!PSEUDO) PSEUDO = (prompt("COMMANDER — enter your callsign:", "") || "").trim().slice(0, 32);
+      localStorage.setItem("nmc_pseudo", PSEUDO);
+    }
+    function addStrikeLabel(lng, lat, pseudo, weapon) {
+      if (!pseudo) return;
+      const el = document.createElement("div");
+      el.className = "strike-label";
+      const icon = weapon === "nuke" ? "☢️" : weapon === "moab" ? "💥" : weapon === "rkt" ? "🚀" : "☠️";
+      el.textContent = `${icon} ${pseudo}`;
+      new maplibregl.Marker({ element: el, anchor: "bottom" }).setLngLat([lng, lat]).addTo(map);
+    }
+    function saveStrike(payload) {
+      fetch("/api/strikes", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload),
+      }).catch(() => {});
+    }
+    // Rejoue une frappe historique : cratère + label, sans explosion ni POST.
+    function replayStrike(s) {
+      const mc = maplibregl.MercatorCoordinate.fromLngLat([s.lng, s.lat], 0);
+      const w = WEAPONS[s.weapon] || WEAPONS.mk1;
+      addMapDecals({ mx: mc.x, my: mc.y, rM: w.r, craterM: w.crater,
+        seed: typeof s.seed === "number" ? s.seed : Math.random() * 100 });
+      addStrikeLabel(s.lng, s.lat, s.pseudo, s.weapon);
+    }
+    map.on("load", () => {
+      ensurePseudo();
+      fetch("/api/strikes?limit=500")
+        .then((r) => r.json())
+        .then((d) => {
+          (d.strikes || []).forEach(replayStrike);
+          if (d.strikes && d.strikes.length)
+            setStatus(`${d.strikes.length} frappe(s) rechargée(s) — bienvenue ${PSEUDO}`);
+        })
+        .catch(() => {});
+    });
+
+    map.on("click", (e) => launchStrike(e.lngLat));
+
+    // ── HUD : armes, coordonnées, villes ────────────────────────────────────
+    const coordsEl = document.getElementById("coords");
+    map.on("mousemove", (e) => {
+      coordsEl.textContent =
+        `TGT ${e.lngLat.lat.toFixed(4)} / ${e.lngLat.lng.toFixed(4)} · ARME : ${WEAPONS[currentWeapon].name.toUpperCase()}`;
+    });
+
+    function selectWeapon(k) {
+      if (!WEAPONS[k]) return;
+      currentWeapon = k;
+      document.querySelectorAll(".wbtn").forEach((b) => b.classList.toggle("sel", b.dataset.w === k));
+    }
+    document.querySelectorAll(".wbtn").forEach((b) =>
+      b.addEventListener("click", () => selectWeapon(b.dataset.w)));
+    addEventListener("keydown", (e) => {
+      const k = { 1: "mk1", 2: "rkt", 3: "moab", 4: "nuke" }[e.key];
+      if (k) selectWeapon(k);
+    });
+
+    const VILLES = {
+      paris:{center:[2.2945,48.8584],zoom:15.8}, newyork:{center:[-73.9857,40.7484],zoom:15.8},
+      sf:{center:[-122.4783,37.8199],zoom:15.5}, tokyo:{center:[139.7454,35.6586],zoom:15.8},
+      dubai:{center:[55.2744,25.1972],zoom:15.5},
+    };
+    document.querySelectorAll("#panel button[data-go]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const v = VILLES[btn.dataset.go];
+        map.flyTo({ ...v, pitch: 30, bearing: -15, duration: 3000, essential: true });
+      });
+    });
+  </script>
+</body>
+</html>
