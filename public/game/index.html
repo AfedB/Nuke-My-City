@@ -35,6 +35,10 @@
     #brand h1 { margin:0; font-size:15px; font-weight:700; letter-spacing:.16em; color:#8dffab;
       text-shadow:0 0 18px rgba(96,255,140,.4); }
     #brand .cdr { margin-top:3px; font-size:10px; letter-spacing:.12em; color:#7dd98f; opacity:.85; }
+    #radioBtn { position:absolute; top:52px; left:16px; z-index:11; cursor:pointer;
+      width:30px; height:28px; font-size:14px; line-height:1; padding:0; color:#b8ffc9;
+      background:rgba(6,14,9,.7); border:1px solid rgba(96,255,140,.28); border-radius:6px; }
+    #radioBtn:hover { background:rgba(30,56,40,.85); }
 
     /* ── Lecture cible (haut droite) ── */
     #coords { position:absolute; top:12px; right:16px; z-index:10; color:#8dffab;
@@ -193,6 +197,7 @@
     <h1>☢ NUKE MY CITY</h1>
     <div class="cdr" id="cdrLine">CDR ——</div>
   </div>
+  <button id="radioBtn" title="Radio">📻</button>
   <div id="coords">⌖ AWAITING TARGET</div>
   <div id="scoreboard"><div class="sc-hd">WORLD CONTROL · zones</div></div>
   <div id="status">booting…</div>
@@ -926,17 +931,32 @@
     }
     function stopLoop(h) { if (h) { try { h.src.stop(); } catch (e) {} } }
 
-    // Radio militaire d'ambiance en boucle (démarre au 1er geste — autoplay)
-    let radioNode = null, wantAmbient = false;
+    // Radio militaire d'ambiance en boucle (démarre au 1er geste — autoplay).
+    // Bouton radio : cycle plein → bas → coupé (persisté).
+    let radioNode = null, radioGain = null, wantAmbient = false;
+    const RADIO_LEVELS = [0.22, 0.08, 0];
+    const RADIO_ICON = ["📻", "🔉", "🔇"];
+    let radioIdx = Math.max(0, Math.min(2, parseInt(localStorage.getItem("nmc_radio") || "0", 10) || 0));
+    function applyRadio() {
+      if (radioGain) radioGain.gain.value = RADIO_LEVELS[radioIdx];
+      const b = document.getElementById("radioBtn");
+      if (b) { b.textContent = RADIO_ICON[radioIdx]; b.title = "Radio : " + ["ON", "bas", "coupée"][radioIdx]; }
+    }
     function startAmbient() {
       if (radioNode || !SFX.radio) return;
       const c = audio();
       const src = c.createBufferSource(); src.buffer = SFX.radio; src.loop = true;
-      const g = c.createGain(); g.gain.value = 0.22;
-      src.connect(g).connect(master); try { src.start(); } catch (e) {}
+      radioGain = c.createGain(); radioGain.gain.value = RADIO_LEVELS[radioIdx];
+      src.connect(radioGain).connect(master); try { src.start(); } catch (e) {}
       radioNode = src;
     }
     addEventListener("pointerdown", () => { audio(); wantAmbient = true; startAmbient(); }, { once: true });
+    document.getElementById("radioBtn").addEventListener("click", () => {
+      radioIdx = (radioIdx + 1) % RADIO_LEVELS.length;
+      localStorage.setItem("nmc_radio", String(radioIdx));
+      applyRadio(); uiClick(500);
+    });
+    applyRadio();   // icône initiale
 
     // Blip UI procédural (clic de bouton) — court, sec, non spatialisé
     function uiClick(freq = 620, vol = 0.11) {
@@ -1166,20 +1186,30 @@
       heli.sound = playLoopSpatial("heli", 0.55);   // rotor en boucle, suivi en distance
       fxLayer.addAircraft(heli);
       function fireRocket(i, h) {
-        // la salve rake une ligne CENTRÉE sur le clic (± motif symétrique)
-        const off = (i - (w.count - 1) / 2) * w.spacing;
+        // cluster SERRÉ autour du clic (plus une ligne) → tombe là où on a visé
+        const ang = Math.random() * Math.PI * 2, rad = Math.sqrt(Math.random()) * w.r * 1.6;
         const ll = new maplibregl.MercatorCoordinate(
-          mc.x + dx * off * mpu, mc.y + dy * off * mpu, 0).toLngLat();
-        const from = new maplibregl.MercatorCoordinate(h.mx, h.my, 0).toLngLat();
-        playSfx("launch", ll.lng, ll.lat, 0.32);     // départ de roquette (spatialisé)
+          mc.x + Math.cos(ang) * rad * mpu, mc.y + Math.sin(ang) * rad * mpu, 0).toLngLat();
+        playSfx("launch", ll.lng, ll.lat, 0.3);
         const el = document.createElement("div");
         el.className = "rocket";
         document.body.appendChild(el);
         const tr = performance.now(), DUR = 520;
+        // origine = l'hélico projeté À SON ALTITUDE (mêmes maths que le rendu 3D
+        // → la roquette part visuellement de l'appareil, pas du sol)
+        const heliScreen = () => {
+          const fx = fxLayer;
+          if (!fx.origin) return map.project([h_ll().lng, h_ll().lat]);
+          const v = new THREE.Vector3(h.mx - fx.origin.x, h.my - fx.origin.y, h.zM * fx.mPerUnit)
+            .applyMatrix4(fx.camera.projectionMatrix);
+          const cw = map.getCanvas().clientWidth, ch = map.getCanvas().clientHeight;
+          return { x: (v.x * 0.5 + 0.5) * cw, y: (-v.y * 0.5 + 0.5) * ch };
+        };
+        const h_ll = () => new maplibregl.MercatorCoordinate(h.mx, h.my, 0).toLngLat();
         (function anim() {
           const u = Math.min(1, (performance.now() - tr) / DUR);
           const p = u * u;
-          const a = map.project([from.lng, from.lat]), b = map.project([ll.lng, ll.lat]);
+          const a = heliScreen(), b = map.project([ll.lng, ll.lat]);
           const x = a.x + (b.x - a.x) * p, y = a.y + (b.y - a.y) * p;
           const rot = Math.atan2(b.y - a.y, b.x - a.x) - Math.PI / 2;
           el.style.transform = `translate(${x}px, ${y}px) rotate(${rot}rad) translate(-1.5px, -38px)`;
