@@ -294,6 +294,13 @@
     // ── Carte : vue satellite pure. La photo aérienne EST le réalisme ; la
     //    caméra plafonne à 35° de pitch pour que l'absence de 3D soit
     //    indétectable (cadrage "satellite militaire / drone d'altitude").
+    // Plafonne le pixel-ratio de rendu à 1.5 (au lieu de 2-3× sur retina) :
+    // gros gain GPU, netteté quasi inchangée. MapLibre + Three lisent
+    // devicePixelRatio à la création du canvas → on le cape juste avant.
+    if ((window.devicePixelRatio || 1) > 1.5) {
+      try { Object.defineProperty(window, "devicePixelRatio", { configurable: true, get: () => 1.5 }); } catch (e) {}
+    }
+
     const map = new maplibregl.Map({
       container: "map",
       style: {
@@ -813,21 +820,13 @@
         this.renderer.resetState();
         this.renderer.render(this.scene, this.camera);
 
-        // Rendu 60fps SEULEMENT quand ça bouge (feux, strike en cours, aéronef
-        // de strike). Le trafic de fond (airliners) dérive à bas régime via un
-        // interval séparé → plus de re-rendu 60fps permanent de toute la map.
-        if (impacts.length || this.aircraft.some((a) => !a.ambient)) map.triggerRepaint();
+        // Rendu 60fps uniquement quand ça bouge : feux en cours ou aéronef de
+        // strike (jet/hélico/ogive) en vol. Au repos, la map ne se re-rend plus.
+        if (impacts.length || this.aircraft.length) map.triggerRepaint();
       },
     };
 
     window.__fx = fxLayer;   // debug console
-    // Trafic de fond (airliners) : dérive à bas régime (~4.5 fps) au lieu de
-    // forcer un re-rendu 60fps permanent de toute la map quand rien ne bouge.
-    setInterval(() => {
-      if (!fxLayer.aircraft || !fxLayer.aircraft.length) return;
-      if (impacts.length || fxLayer.aircraft.some((a) => !a.ambient)) return;  // déjà en 60fps
-      map.triggerRepaint();
-    }, 220);
     window.__heli = (lng, lat) => spawnHeliStrike(
       { lng: lng ?? map.getCenter().lng, lat: lat ?? map.getCenter().lat }, WEAPONS.rkt);
     map.on("load", () => {
@@ -1034,7 +1033,7 @@
 
     // ── Modèles GLB : normalisés (plus grande dimension = 1 unité, centrés,
     //    nez glTF = +Z). Échelle finale appliquée par aéronef en mètres.
-    const MODELS = { jet: null, heli: null, airliner: null };
+    const MODELS = { jet: null, heli: null };
     const gltfLoader = new GLTFLoader();
     function loadModel(key, dataUrl, cb) {
       if (!dataUrl) return;
@@ -1063,62 +1062,6 @@
       });
     }
 
-    // ── Trafic aérien mondial : avions de ligne sur de VRAIES routes ───────
-    // Grands cercles entre villes réelles, vitesse réelle (~870 km/h) : les
-    // avions existent dans le monde en continu, on les croise s'ils passent.
-    const CITIES = [
-      [2.55, 49.01], [-0.45, 51.47], [-73.78, 40.64], [-118.41, 33.94],
-      [139.78, 35.55], [55.36, 25.25], [103.99, 1.36], [151.18, -33.95],
-      [-46.47, -23.43], [28.24, -26.13], [37.41, 55.97], [116.59, 40.08],
-      [77.10, 28.56], [28.75, 41.28], [31.41, 30.12], [-99.07, 19.44],
-      [-79.63, 43.68], [8.57, 50.03], [-3.57, 40.47], [100.75, 13.69],
-      [126.45, 37.47], [-58.54, -34.82], [3.32, 6.58], [12.25, 41.80],
-    ];
-    const D2R = Math.PI / 180;
-    const cityVec = ([lng, lat]) => {
-      const la = lat * D2R, lo = lng * D2R;
-      return [Math.cos(la) * Math.cos(lo), Math.cos(la) * Math.sin(lo), Math.sin(la)];
-    };
-    // point du grand cercle entre a et b à la fraction f (slerp sphérique)
-    function gcLngLat(va, vb, f) {
-      const dot = Math.max(-1, Math.min(1, va[0]*vb[0] + va[1]*vb[1] + va[2]*vb[2]));
-      const ang = Math.acos(dot);
-      if (ang < 1e-6) return va;
-      const s1 = Math.sin((1 - f) * ang) / Math.sin(ang), s2 = Math.sin(f * ang) / Math.sin(ang);
-      const v = [va[0]*s1 + vb[0]*s2, va[1]*s1 + vb[1]*s2, va[2]*s1 + vb[2]*s2];
-      return { lng: Math.atan2(v[1], v[0]) / D2R, lat: Math.asin(Math.max(-1, Math.min(1, v[2]))) / D2R };
-    }
-    function spawnAirliner(startRandom) {
-      if (!MODELS.airliner || !fxLayer.scene) return;
-      let ai = Math.floor(Math.random() * CITIES.length), bi;
-      do { bi = Math.floor(Math.random() * CITIES.length); } while (bi === ai);
-      const va = cityVec(CITIES[ai]), vb = cityVec(CITIES[bi]);
-      const ang = Math.acos(Math.max(-1, Math.min(1, va[0]*vb[0] + va[1]*vb[1] + va[2]*vb[2])));
-      const distM = ang * 6371000;
-      const f0 = startRandom ? Math.random() : 0;
-      const t0 = now(), SPD = 242;              // ~870 km/h
-      const craft = {
-        obj: MODELS.airliner.clone(), lenM: 92, mx: 0, my: 0, zM: 1700, hx: 1, hy: 0,
-        ambient: true,                                        // trafic de fond (rendu lent)
-        trail: { sizeM: 15, life: 7.5, color: 0xf4f7fa },     // contrail
-        update(t) {
-          const f = f0 + ((t - t0) * SPD) / distM;
-          if (f >= 1) { spawnAirliner(false); return false; }   // arrivé → nouvelle route
-          const p1 = gcLngLat(va, vb, f), p2 = gcLngLat(va, vb, Math.min(1, f + 0.0004));
-          const m1 = maplibregl.MercatorCoordinate.fromLngLat([p1.lng, p1.lat], 0);
-          const m2 = maplibregl.MercatorCoordinate.fromLngLat([p2.lng, p2.lat], 0);
-          this.mx = m1.x; this.my = m1.y;
-          const l = Math.hypot(m2.x - m1.x, m2.y - m1.y) || 1;
-          this.hx = (m2.x - m1.x) / l; this.hy = (m2.y - m1.y) / l;
-          return true;
-        },
-      };
-      fxLayer.addAircraft(craft);
-    }
-    loadModel("airliner", window.MODELS_B64 && window.MODELS_B64.airliner, () => {
-      const boot = () => { for (let i = 0; i < 8; i++) spawnAirliner(true); };
-      if (fxLayer.scene) boot(); else map.on("load", () => setTimeout(boot, 500));
-    });
     loadModel("jet", window.MODELS_B64 && window.MODELS_B64.jet);
     loadModel("heli", window.MODELS_B64 && window.MODELS_B64.heli);
 
