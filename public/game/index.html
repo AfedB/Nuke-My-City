@@ -958,8 +958,9 @@
     });
     applyRadio();   // icône initiale
 
-    // Blip UI procédural (clic de bouton) — court, sec, non spatialisé
+    // Clic UI : sample si dispo, sinon blip procédural
     function uiClick(freq = 620, vol = 0.11) {
+      if (SFX.ui) { playSfx("ui", null, null, 0.55); return; }
       const c = audio(), t = c.currentTime;
       const o = c.createOscillator(), g = c.createGain();
       o.type = "square";
@@ -974,7 +975,10 @@
     loadSfx("heli", "helicopter.mp3");
     loadSfx("launch", "rocket-launcher.mp3");
     loadSfx("impact", "bomb-impact.mp3");
-    loadSfx("confirm", "acceptation-sound.mp3");
+    loadSfx("impact_far", "freesound_community-huge-explosion-in-distance-100604.mp3");
+    loadSfx("ui", "juniorsoundays-ui-sound-95-532185.mp3");
+    loadSfx("jet", "freesound_community-f-106-fly-by-98385.mp3");
+    loadSfx("engage_voice", "applehillstudios-military-radio-voice-engaging-enemy-543326.mp3");
 
     // ── Feedback écran : lueur ambrée + shake ───────────────────────────────
     const flashEl = document.getElementById("flash");
@@ -1109,6 +1113,7 @@
           return d < 2800;
         },
       };
+      playSfx("jet", tgt.lng, tgt.lat, 0.75);   // passage du chasseur
       fxLayer.addAircraft(jet);
       function drop() {
         whistle(1.6);
@@ -1147,7 +1152,9 @@
       const mpu = mc.meterInMercatorCoordinateUnits();
       const th = Math.random() * Math.PI * 2;
       const dx = Math.cos(th), dy = Math.sin(th);
-      const ALT = 140, SPAWN = 1100, HOVERD = 0;     // stationne PILE au-dessus du clic
+      // Stationne juste DERRIÈRE la ligne de tir : la salve marche de l'hélico
+      // jusqu'au clic, alignée avec son nez.
+      const ALT = 140, HOVERD = (w.count - 1) * w.spacing + 40, SPAWN = HOVERD + 1000;
       const APPROACH_SPD = 200, DEPART_SPD = 150;
       const FIRE_DELAY = 0.4, FIRE_DUR = w.count * 0.18 + 0.5;
       const tApproach = (SPAWN - HOVERD) / APPROACH_SPD;
@@ -1186,10 +1193,10 @@
       heli.sound = playLoopSpatial("heli", 0.55);   // rotor en boucle, suivi en distance
       fxLayer.addAircraft(heli);
       function fireRocket(i, h) {
-        // cluster SERRÉ autour du clic (plus une ligne) → tombe là où on a visé
-        const ang = Math.random() * Math.PI * 2, rad = Math.sqrt(Math.random()) * w.r * 1.6;
+        // ligne ALIGNÉE : la salve marche de l'hélico vers le clic (dernière = clic)
+        const off = -(w.count - 1 - i) * w.spacing;
         const ll = new maplibregl.MercatorCoordinate(
-          mc.x + Math.cos(ang) * rad * mpu, mc.y + Math.sin(ang) * rad * mpu, 0).toLngLat();
+          mc.x + dx * off * mpu, mc.y + dy * off * mpu, 0).toLngLat();
         playSfx("launch", ll.lng, ll.lat, 0.3);
         const el = document.createElement("div");
         el.className = "rocket";
@@ -1303,7 +1310,11 @@
       fxLayer.addImpact(im);
       addMapDecals(im);          // cratère + suie : couches natives MapLibre
       addStrikeLabel(lngLat.lng, lngLat.lat, PSEUDO, key);
-      if (!playSfx("impact", lngLat.lng, lngLat.lat, 0.95)) boom(w);   // sample sinon procédural
+      // impact lointain (dézoom / frappe loin du centre) → grondement au loin ;
+      // sinon explosion proche spatialisée
+      const far = map.getZoom() < 8.5 || spatialAt(lngLat.lng, lngLat.lat).gain < 0.25;
+      if (far) { if (!playSfx("impact_far", null, null, 0.55)) boom(w); }
+      else { if (!playSfx("impact", lngLat.lng, lngLat.lat, 0.95)) boom(w); }
       flashFx(w.flash); shake(w.shake);
       // glitch du capteur : réservé aux grosses munitions (pas la rafale)
       if (w.flash >= 0.4) {
@@ -1348,7 +1359,7 @@
       modal.querySelectorAll(".fm-btn").forEach((b) => b.addEventListener("click", () => {
         FACTION = b.dataset.f;
         localStorage.setItem("nmc_faction", FACTION);
-        if (!playSfx("confirm", null, null, 0.6)) uiClick(920);
+        uiClick();
         modal.hidden = true; refreshCdr();
       }, { once: true }));
     }
@@ -1510,7 +1521,7 @@
     }
     function arm() {
       armed = true; refreshEngage();
-      if (!playSfx("confirm", null, null, 0.5)) uiClick(880);
+      if (!playSfx("engage_voice", null, null, 0.75)) uiClick(880);   // « engaging enemy »
       setStatus(`ARMED · ${SHORT[currentWeapon]} — select target`);
     }
     function disarm() { armed = false; refreshEngage(); }
