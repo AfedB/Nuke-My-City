@@ -39,10 +39,10 @@
     #brand h1 { margin:0; font-size:15px; font-weight:700; letter-spacing:.16em; color:#8dffab;
       text-shadow:0 0 18px rgba(96,255,140,.4); }
     #brand .cdr { margin-top:3px; font-size:10px; letter-spacing:.12em; color:#7dd98f; opacity:.85; }
-    #radioBtn { cursor:pointer; width:40px; height:38px; box-sizing:border-box; display:inline-flex;
+    #radioBtn, #labelsBtn { cursor:pointer; width:40px; height:38px; box-sizing:border-box; display:inline-flex;
       align-items:center; justify-content:center; font-size:16px; line-height:1; padding:0;
       color:#b8ffc9; background:rgba(20,40,28,.6); border:1px solid rgba(96,255,140,.3); border-radius:6px; }
-    #radioBtn:hover { background:rgba(30,56,40,.85); }
+    #radioBtn:hover, #labelsBtn:hover { background:rgba(30,56,40,.85); }
 
     /* ── Lecture cible (haut droite) ── */
     #coords { position:absolute; top:12px; right:16px; z-index:10; color:#8dffab;
@@ -187,10 +187,12 @@
 
     /* ── Label pseudo flottant au-dessus d'un cratère (goofy, screenshot-able) ── */
     .strike-label { font-family:"Cascadia Mono", ui-monospace, Consolas, monospace;
-      font-size:11px; font-weight:600; letter-spacing:.03em; white-space:nowrap;
+      font-size:10px; font-weight:600; letter-spacing:.03em; white-space:nowrap;
       color:#d6ffe2; background:rgba(6,14,9,.82); border:1px solid rgba(96,255,140,.35);
-      padding:2px 7px; border-radius:5px; transform:translateY(-6px);
-      text-shadow:0 1px 2px #000; box-shadow:0 3px 10px rgba(0,0,0,.5); cursor:default; }
+      padding:2px 6px; border-radius:5px;
+      text-shadow:0 1px 2px #000; box-shadow:0 3px 10px rgba(0,0,0,.5); cursor:default;
+      opacity:0; transition:opacity .14s; pointer-events:none; }   /* cachés par défaut */
+    .strike-label.show { opacity:1; }
   </style>
 </head>
 <body>
@@ -211,6 +213,10 @@
       <div>
         <div class="lbl">RADIO</div>
         <button id="radioBtn" title="Radio">📻</button>
+      </div>
+      <div>
+        <div class="lbl">TAGS</div>
+        <button id="labelsBtn" title="Tags">🏷️</button>
       </div>
       <div>
         <div class="lbl">THEATER</div>
@@ -328,7 +334,8 @@
             filter: ["in", ["get", "class"], ["literal", ["city", "town"]]],
             minzoom: 6,
             layout: {
-              "text-field": ["get", "name"],
+              // anglais si dispo, sinon translittération latine, sinon nom local
+              "text-field": ["coalesce", ["get", "name:en"], ["get", "name:latin"], ["get", "name"]],
               "text-font": ["Noto Sans Bold"],
               "text-size": ["interpolate", ["linear"], ["zoom"], 7, 11, 12, 18, 15, 24],
               "text-transform": "uppercase", "text-letter-spacing": 0.12,
@@ -806,12 +813,21 @@
         this.renderer.resetState();
         this.renderer.render(this.scene, this.camera);
 
-        // Feux qui brûlent + trafic aérien mondial → rendu continu
-        if (impacts.length || this.aircraft.length) map.triggerRepaint();
+        // Rendu 60fps SEULEMENT quand ça bouge (feux, strike en cours, aéronef
+        // de strike). Le trafic de fond (airliners) dérive à bas régime via un
+        // interval séparé → plus de re-rendu 60fps permanent de toute la map.
+        if (impacts.length || this.aircraft.some((a) => !a.ambient)) map.triggerRepaint();
       },
     };
 
     window.__fx = fxLayer;   // debug console
+    // Trafic de fond (airliners) : dérive à bas régime (~4.5 fps) au lieu de
+    // forcer un re-rendu 60fps permanent de toute la map quand rien ne bouge.
+    setInterval(() => {
+      if (!fxLayer.aircraft || !fxLayer.aircraft.length) return;
+      if (impacts.length || fxLayer.aircraft.some((a) => !a.ambient)) return;  // déjà en 60fps
+      map.triggerRepaint();
+    }, 220);
     window.__heli = (lng, lat) => spawnHeliStrike(
       { lng: lng ?? map.getCenter().lng, lat: lat ?? map.getCenter().lat }, WEAPONS.rkt);
     map.on("load", () => {
@@ -1083,6 +1099,7 @@
       const t0 = now(), SPD = 242;              // ~870 km/h
       const craft = {
         obj: MODELS.airliner.clone(), lenM: 92, mx: 0, my: 0, zM: 1700, hx: 1, hy: 0,
+        ambient: true,                                        // trafic de fond (rendu lent)
         trail: { sizeM: 15, life: 7.5, color: 0xf4f7fa },     // contrail
         update(t) {
           const f = f0 + ((t - t0) * SPD) / distM;
@@ -1099,7 +1116,7 @@
       fxLayer.addAircraft(craft);
     }
     loadModel("airliner", window.MODELS_B64 && window.MODELS_B64.airliner, () => {
-      const boot = () => { for (let i = 0; i < 14; i++) spawnAirliner(true); };
+      const boot = () => { for (let i = 0; i < 8; i++) spawnAirliner(true); };
       if (fxLayer.scene) boot(); else map.on("load", () => setTimeout(boot, 500));
     });
     loadModel("jet", window.MODELS_B64 && window.MODELS_B64.jet);
@@ -1478,14 +1495,38 @@
         renderScore(d.board);
       }).catch(() => {});
     }
+    // Tags de frappe : cachés par défaut (ils masquent les cratères), affichés
+    // au survol du cratère, ou tous d'un coup via le toggle TAGS.
+    const strikeLabels = [];   // { lng, lat, el }
+    let labelsVisible = localStorage.getItem("nmc_labels") === "1";
     function addStrikeLabel(lng, lat, pseudo, weapon) {
       if (!pseudo) return;
       const el = document.createElement("div");
-      el.className = "strike-label";
+      el.className = "strike-label" + (labelsVisible ? " show" : "");
       const icon = weapon === "nuke" ? "☢️" : weapon === "moab" ? "💥" : weapon === "rkt" ? "🚀" : "☠️";
       el.textContent = `${icon} ${pseudo}`;
       new maplibregl.Marker({ element: el, anchor: "bottom" }).setLngLat([lng, lat]).addTo(map);
+      strikeLabels.push({ lng, lat, el });
     }
+    function applyLabels() {
+      const b = document.getElementById("labelsBtn");
+      if (b) { b.textContent = labelsVisible ? "🏷️" : "🚫"; b.title = "Tags : " + (labelsVisible ? "ON" : "au survol"); }
+      strikeLabels.forEach((s) => s.el.classList.toggle("show", labelsVisible));
+    }
+    document.getElementById("labelsBtn").addEventListener("click", () => {
+      labelsVisible = !labelsVisible;
+      localStorage.setItem("nmc_labels", labelsVisible ? "1" : "0");
+      applyLabels(); uiClick(600);
+    });
+    // survol : affiche les tags proches du curseur quand ils sont cachés
+    map.on("mousemove", (e) => {
+      if (labelsVisible || !strikeLabels.length) return;
+      for (const s of strikeLabels) {
+        const sp = map.project([s.lng, s.lat]);
+        s.el.classList.toggle("show", Math.hypot(sp.x - e.point.x, sp.y - e.point.y) < 34);
+      }
+    });
+    applyLabels();   // état initial du bouton
     function saveStrike(payload) {
       fetch("/api/strikes", {
         method: "POST", headers: { "content-type": "application/json" },
@@ -1599,8 +1640,8 @@
         const mapEl = document.getElementById("map");
         mapEl.classList.add("flying");
         const clear = () => mapEl.classList.remove("flying");
-        map.once("idle", clear);
-        setTimeout(clear, 4500);   // filet de sécurité si 'idle' tarde
+        map.once("moveend", () => setTimeout(clear, 150));   // se lève dès l'arrivée
+        setTimeout(clear, 3600);   // filet de sécurité
         map.flyTo({ ...v, pitch: 30, bearing: -15, duration: 3000, essential: true });
       }
       e.target.value = "";
