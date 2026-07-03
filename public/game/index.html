@@ -979,6 +979,8 @@
     loadSfx("ui", "juniorsoundays-ui-sound-95-532185.mp3");
     loadSfx("jet", "freesound_community-f-106-fly-by-98385.mp3");
     loadSfx("engage_voice", "applehillstudios-military-radio-voice-engaging-enemy-543326.mp3");
+    loadSfx("countdown", "freesound_community-bomb-countdown-beeps-6868.mp3");
+    loadSfx("falling", "freesound_community-falling-bomb-41038.mp3");
 
     // ── Feedback écran : lueur ambrée + shake ───────────────────────────────
     const flashEl = document.getElementById("flash");
@@ -1116,7 +1118,7 @@
       playSfx("jet", tgt.lng, tgt.lat, 0.75);   // passage du chasseur
       fxLayer.addAircraft(jet);
       function drop() {
-        whistle(1.6);
+        if (!playSfx("falling", tgt.lng, tgt.lat, 0.85)) whistle(1.6);   // la bombe tombe
         const tb = now();
         const bomb = {
           obj: mkBombMesh(), lenM: 11, mx: 0, my: 0, zM: ALT, hx: dx, hy: dy,
@@ -1235,7 +1237,7 @@
       const dx = Math.cos(th), dy = Math.sin(th);
       const H = 2800, BACK = 760, DUR = (w.flight || 2100) / 1000;
       const t0 = now();
-      whistle(DUR);
+      if (!playSfx("falling", tgt.lng, tgt.lat, 0.85)) whistle(DUR);   // ogive en chute
       const vx = dx * (BACK / DUR), vy = dy * (BACK / DUR), vz = -H / DUR; // m/s
       const rv = {
         obj: mkOgiveMesh(), lenM: 20, mx: 0, my: 0, zM: H,
@@ -1275,6 +1277,7 @@
     function launchStrike(lngLat) {
       const w = WEAPONS[currentWeapon];
       const tgt = { lng: lngLat.lng, lat: lngLat.lat };
+      playSfx("countdown", null, null, 0.55);   // confirme le tir (bips) juste après ENGAGE
       if (w.delivery === "jet") return spawnJetStrike(tgt, w);
       if (w.delivery === "heli") return spawnHeliStrike(tgt, w);
       if (w.delivery === "ogive") return spawnOgiveStrike(tgt, w);
@@ -1283,7 +1286,7 @@
     // Missile de croisière : élément DOM screen-space (suit la cible même si
     // la carte bouge — et en multi, un missile visible = interceptable).
     function missileStrike(tgt, w) {
-      if (!playSfx("launch", tgt.lng, tgt.lat, 0.8)) whistle(w.flight / 1000);
+      if (!playSfx("falling", tgt.lng, tgt.lat, 0.8)) whistle(w.flight / 1000);   // sifflement de chute
       const el = document.createElement("div");
       el.className = "missile";
       document.body.appendChild(el);
