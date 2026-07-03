@@ -30,12 +30,17 @@
     .maplibregl-ctrl-bottom-left,
     .maplibregl-ctrl-bottom-right { display: none !important; }
 
+    /* léger flou pendant le voyage (jump to) — masque le chargement des tuiles */
+    #map .maplibregl-canvas { transition: filter .35s ease; }
+    #map.flying .maplibregl-canvas { filter: blur(2.5px) brightness(.94); }
+
     /* ── Marque + callsign (haut gauche) ── */
     #brand { position:absolute; top:12px; left:16px; z-index:10; pointer-events:none; }
     #brand h1 { margin:0; font-size:15px; font-weight:700; letter-spacing:.16em; color:#8dffab;
       text-shadow:0 0 18px rgba(96,255,140,.4); }
     #brand .cdr { margin-top:3px; font-size:10px; letter-spacing:.12em; color:#7dd98f; opacity:.85; }
-    #radioBtn { cursor:pointer; width:40px; height:37px; font-size:16px; line-height:1; padding:0;
+    #radioBtn { cursor:pointer; width:40px; height:38px; box-sizing:border-box; display:inline-flex;
+      align-items:center; justify-content:center; font-size:16px; line-height:1; padding:0;
       color:#b8ffc9; background:rgba(20,40,28,.6); border:1px solid rgba(96,255,140,.3); border-radius:6px; }
     #radioBtn:hover { background:rgba(30,56,40,.85); }
 
@@ -59,15 +64,15 @@
     #hud .lbl { font-size:9px; letter-spacing:.18em; opacity:.5; margin-bottom:5px; }
 
     .hudsel { background:rgba(20,40,28,.6); color:#b8ffc9; border:1px solid rgba(96,255,140,.3);
-      border-radius:6px; padding:9px 10px; font-family:inherit; font-size:12px; cursor:pointer;
-      min-width:150px; letter-spacing:.03em; }
+      border-radius:6px; height:38px; padding:0 11px; box-sizing:border-box;
+      font-family:inherit; font-size:12px; cursor:pointer; min-width:150px; letter-spacing:.03em; }
 
     /* ── Picker d'arme visuel (grille 2×2 qui s'ouvre vers le haut) ── */
     .wpick { position:relative; }
-    /* même radius pill qu'ENGAGE, fond inchangé */
-    .wtrigger { display:flex; align-items:center; gap:8px; min-width:150px;
+    /* même radius (6px) et hauteur (38px) que radio/jump, fond inchangé */
+    .wtrigger { display:flex; align-items:center; gap:8px; min-width:150px; height:38px; box-sizing:border-box;
       background:rgba(20,40,28,.6); color:#b8ffc9; border:1px solid rgba(96,255,140,.3);
-      border-radius:999px; padding:12px 18px; font-family:inherit; font-size:12px; cursor:pointer;
+      border-radius:6px; padding:0 12px; font-family:inherit; font-size:12px; cursor:pointer;
       letter-spacing:.03em; }
     .wtrigger .ic { font-size:16px; }
     .wtrigger .nm { flex:1; text-align:left; font-weight:600; }
@@ -89,9 +94,10 @@
     .wtile.sel { background:rgba(90,55,10,.85); border-color:#ffb84d; color:#ffd9a0;
       box-shadow:0 0 12px rgba(255,160,60,.3); }
 
-    /* bouton ENGAGE compact et bien arrondi (pill) */
-    #engage { cursor:pointer; font-family:inherit; font-weight:700; letter-spacing:.16em;
-      font-size:13px; padding:12px 30px; border-radius:999px; white-space:nowrap;
+    /* ENGAGE : même radius (6px) et hauteur (38px) que le reste de la nav */
+    #engage { cursor:pointer; display:inline-flex; align-items:center; justify-content:center;
+      height:38px; box-sizing:border-box; font-family:inherit; font-weight:700; letter-spacing:.16em;
+      font-size:13px; padding:0 28px; border-radius:6px; white-space:nowrap;
       color:#08160c; background:#5aff8c; border:1px solid #8dffab;
       box-shadow:0 0 22px rgba(90,255,140,.4); transition:background .12s, box-shadow .12s, color .12s; }
     #engage:hover { background:#7dffa6; }
@@ -298,7 +304,11 @@
           omt: { type: "vector", url: "https://tiles.openfreemap.org/planet" },
         },
         layers: [
-          { id: "satellite", type: "raster", source: "satellite" },
+          // fond sombre : les tuiles pas encore chargées apparaissent en
+          // vert-nuit (plus de carrés blancs/vides à la bascule de zone)
+          { id: "bg", type: "background", paint: { "background-color": "#06110b" } },
+          { id: "satellite", type: "raster", source: "satellite",
+            paint: { "raster-fade-duration": 350 } },   // fondu doux des tuiles
           // ── Frontières administratives (léger, en surimpression verte) ──
           // admin_level 4 = régions/états ; 6 = départements/comtés.
           { id: "zone-borders", type: "line", source: "omt", "source-layer": "boundary",
@@ -332,7 +342,7 @@
       },
       center: [2.3490, 48.8560], zoom: 12.4, pitch: 30, bearing: -15,
       maxPitch: 35, maxZoom: 17.5, minZoom: 2.5,
-      antialias: true,
+      antialias: true, maxTileCacheSize: 512, fadeDuration: 350,
     });
     map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), "top-right");
     map.doubleClickZoom.disable();   // double-clic = 2 missiles, pas un zoom surprise
@@ -899,7 +909,18 @@
         src.connect(g).connect(p).connect(master);
       } else src.connect(g).connect(master);
       src.start();
-      return true;
+      return { src, gain: g };   // handle pour couper/fondre (ex: whistle de chute)
+    }
+    // Coupe un son en fondu court (ex: le sifflement de chute quand ça touche)
+    function fadeStop(h, fadeMs = 160) {
+      if (!h || !h.gain) return;
+      const c = audio(), t = c.currentTime;
+      try {
+        h.gain.gain.cancelScheduledValues(t);
+        h.gain.gain.setValueAtTime(Math.max(0.0001, h.gain.gain.value), t);
+        h.gain.gain.linearRampToValueAtTime(0.0001, t + fadeMs / 1000);
+        h.src.stop(t + fadeMs / 1000 + 0.02);
+      } catch (e) {}
     }
     // Boucle spatialisée suivie (hélico) : gain/pan mis à jour chaque frame
     function playLoopSpatial(name, base) {
@@ -1108,7 +1129,8 @@
       playSfx("jet", tgt.lng, tgt.lat, 0.75);   // passage du chasseur
       fxLayer.addAircraft(jet);
       function drop() {
-        if (!playSfx("falling", tgt.lng, tgt.lat, 0.85)) whistle(1.6);   // la bombe tombe
+        const fall = playSfx("falling", tgt.lng, tgt.lat, 0.85);   // la bombe tombe
+        if (!fall) whistle(1.6);
         const tb = now();
         const bomb = {
           obj: mkBombMesh(), lenM: 11, mx: 0, my: 0, zM: ALT, hx: dx, hy: dy,
@@ -1117,7 +1139,7 @@
             const d = -RELEASE * (1 - u) * (1 - u);   // décélère à l'horizontale
             this.mx = mc.x + dx * d * mpu; this.my = mc.y + dy * d * mpu;
             this.zM = ALT * (1 - u * u);              // chute accélérée
-            if (u >= 1) { detonate(tgt, w); return false; }
+            if (u >= 1) { fadeStop(fall); detonate(tgt, w); return false; }
             return true;
           },
         };
@@ -1227,7 +1249,8 @@
       const dx = Math.cos(th), dy = Math.sin(th);
       const H = 2800, BACK = 760, DUR = (w.flight || 2100) / 1000;
       const t0 = now();
-      if (!playSfx("falling", tgt.lng, tgt.lat, 0.85)) whistle(DUR);   // ogive en chute
+      const fall = playSfx("falling", tgt.lng, tgt.lat, 0.85);   // ogive en chute
+      if (!fall) whistle(DUR);
       const vx = dx * (BACK / DUR), vy = dy * (BACK / DUR), vz = -H / DUR; // m/s
       const rv = {
         obj: mkOgiveMesh(), lenM: 20, mx: 0, my: 0, zM: H,
@@ -1238,7 +1261,7 @@
           this.mx = mc.x - dx * BACK * (1 - u) * mpu;
           this.my = mc.y - dy * BACK * (1 - u) * mpu;
           this.zM = H * (1 - u);
-          if (u >= 1) { detonate(tgt, w); return false; }
+          if (u >= 1) { fadeStop(fall); detonate(tgt, w); return false; }
           return true;
         },
       };
@@ -1276,7 +1299,8 @@
     // Missile de croisière : élément DOM screen-space (suit la cible même si
     // la carte bouge — et en multi, un missile visible = interceptable).
     function missileStrike(tgt, w) {
-      if (!playSfx("falling", tgt.lng, tgt.lat, 0.8)) whistle(w.flight / 1000);   // sifflement de chute
+      const fall = playSfx("falling", tgt.lng, tgt.lat, 0.8);   // sifflement de chute
+      if (!fall) whistle(w.flight / 1000);
       const el = document.createElement("div");
       el.className = "missile";
       document.body.appendChild(el);
@@ -1290,7 +1314,7 @@
         const rot = Math.atan2(end.y - sy, end.x - sx) - Math.PI / 2;
         el.style.transform = `translate(${x}px, ${y}px) rotate(${rot}rad) translate(-2px, -84px)`;
         if (t < 1) requestAnimationFrame(anim);
-        else { el.remove(); detonate(tgt, w); }
+        else { el.remove(); fadeStop(fall); detonate(tgt, w); }
       })();
     }
 
@@ -1571,7 +1595,14 @@
     document.getElementById("jump").addEventListener("change", (e) => {
       uiClick(560);
       const v = VILLES[e.target.value];
-      if (v) map.flyTo({ ...v, pitch: 30, bearing: -15, duration: 3000, essential: true });
+      if (v) {
+        const mapEl = document.getElementById("map");
+        mapEl.classList.add("flying");
+        const clear = () => mapEl.classList.remove("flying");
+        map.once("idle", clear);
+        setTimeout(clear, 4500);   // filet de sécurité si 'idle' tarde
+        map.flyTo({ ...v, pitch: 30, bearing: -15, duration: 3000, essential: true });
+      }
       e.target.value = "";
     });
 
