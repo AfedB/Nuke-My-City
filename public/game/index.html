@@ -1042,7 +1042,6 @@
     loadSfx("impact_far", "freesound_community-huge-explosion-in-distance-100604.mp3");
     loadSfx("ui", "juniorsoundays-ui-sound-95-532185.mp3");
     loadSfx("jet", "freesound_community-f-106-fly-by-98385.mp3");
-    loadSfx("engage_voice", "applehillstudios-military-radio-voice-engaging-enemy-543326.mp3");
     loadSfx("countdown", "freesound_community-bomb-countdown-beeps-6868.mp3");
     loadSfx("falling", "freesound_community-falling-bomb-41038.mp3");
 
@@ -1288,7 +1287,6 @@
     function launchStrike(lngLat) {
       const w = WEAPONS[currentWeapon];
       const tgt = { lng: lngLat.lng, lat: lngLat.lat };
-      playSfx("countdown", null, null, 0.55);   // confirme le tir (bips) juste après ENGAGE
       if (w.delivery === "jet") return spawnJetStrike(tgt, w);
       if (w.delivery === "heli") return spawnHeliStrike(tgt, w);
       if (w.delivery === "ogive") return spawnOgiveStrike(tgt, w);
@@ -1552,7 +1550,7 @@
     }
     function arm() {
       armed = true; refreshEngage();
-      if (!playSfx("engage_voice", null, null, 0.75)) uiClick(880);   // « engaging enemy »
+      if (!playSfx("countdown", null, null, 0.55)) uiClick(880);   // bips de compte à rebours
       setStatus(`ARMED · ${SHORT[currentWeapon]} — select target`);
     }
     function disarm() { armed = false; refreshEngage(); }
