@@ -150,6 +150,31 @@
       animation:rotordom .11s linear infinite; }
     @keyframes rotordom { to { transform:rotate(360deg); } }
 
+    /* ── Modal de choix de faction ── */
+    #factionModal { position:fixed; inset:0; z-index:30; display:flex; align-items:center; justify-content:center;
+      background:rgba(2,6,4,.82); backdrop-filter:blur(6px);
+      font-family:"Cascadia Mono", ui-monospace, Consolas, monospace; }
+    #factionModal[hidden] { display:none; }
+    .fm-box { text-align:center; padding:34px 40px; border:1px solid rgba(96,255,140,.3);
+      border-radius:14px; background:rgba(6,14,9,.9); box-shadow:0 20px 60px rgba(0,0,0,.6); }
+    .fm-title { font-size:20px; font-weight:700; letter-spacing:.2em; color:#8dffab; }
+    .fm-sub { font-size:11px; opacity:.6; margin:8px 0 22px; letter-spacing:.06em; }
+    .fm-row { display:flex; gap:16px; }
+    .fm-btn { cursor:pointer; font-family:inherit; font-weight:700; letter-spacing:.14em; font-size:15px;
+      color:#08160c; background:var(--c); border:0; border-radius:10px; padding:20px 26px; min-width:130px;
+      box-shadow:0 0 24px color-mix(in srgb, var(--c) 45%, transparent); transition:transform .1s; }
+    .fm-btn:hover { transform:translateY(-3px); }
+
+    /* ── Scoreboard factions (haut droite) ── */
+    #scoreboard { position:absolute; top:52px; right:14px; z-index:10;
+      background:rgba(3,10,6,.62); border:1px solid rgba(96,255,140,.2); border-radius:6px;
+      padding:7px 10px; font-family:"Cascadia Mono", ui-monospace, Consolas, monospace;
+      font-size:11px; color:#cfeedd; min-width:118px; }
+    #scoreboard .sc-hd { font-size:8px; letter-spacing:.18em; opacity:.5; margin-bottom:5px; }
+    .sc-row { display:flex; align-items:center; gap:7px; padding:2px 0; letter-spacing:.05em; }
+    .sc-row b { margin-left:auto; }
+    .sc-dot { width:9px; height:9px; border-radius:50%; box-shadow:0 0 6px currentColor; }
+
     /* ── Label pseudo flottant au-dessus d'un cratère (goofy, screenshot-able) ── */
     .strike-label { font-family:"Cascadia Mono", ui-monospace, Consolas, monospace;
       font-size:11px; font-weight:600; letter-spacing:.03em; white-space:nowrap;
@@ -169,7 +194,20 @@
     <div class="cdr" id="cdrLine">CDR ——</div>
   </div>
   <div id="coords">⌖ AWAITING TARGET</div>
+  <div id="scoreboard"><div class="sc-hd">WORLD CONTROL · zones</div></div>
   <div id="status">booting…</div>
+
+  <div id="factionModal" hidden>
+    <div class="fm-box">
+      <div class="fm-title">CHOOSE YOUR FACTION</div>
+      <div class="fm-sub">every strike shifts world control toward your camp</div>
+      <div class="fm-row">
+        <button class="fm-btn" data-f="crimson" style="--c:#ff4d4d">CRIMSON</button>
+        <button class="fm-btn" data-f="azure" style="--c:#4da6ff">AZURE</button>
+        <button class="fm-btn" data-f="viridian" style="--c:#4dff88">VIRIDIAN</button>
+      </div>
+    </div>
+  </div>
 
   <div id="hud">
     <div class="zone left">
@@ -1232,7 +1270,9 @@
       }
       setStatus(`STRIKE · ${key.toUpperCase()} · r${w.r}m · ${impacts.length} total`);
       map.triggerRepaint();
-      saveStrike({ pseudo: PSEUDO, lng: lngLat.lng, lat: lngLat.lat, weapon: key, seed });
+      const zone = findZone(lngLat.lng, lngLat.lat);   // pays touché (ou null si en mer)
+      saveStrike({ pseudo: PSEUDO, faction: FACTION || null, lng: lngLat.lng, lat: lngLat.lat,
+        weapon: key, seed, zoneId: zone ? zone.id : null, zoneName: zone ? zone.name : null });
       addRadarBlip(lngLat.lng, lngLat.lat, true); updateRadar();
     }
 
@@ -1240,11 +1280,110 @@
     // Fonctionne quand le jeu est servi par l'app Next ; en file:// les fetch
     // échouent silencieusement et le jeu reste jouable hors-ligne.
     let PSEUDO = (localStorage.getItem("nmc_pseudo") || "").trim();
+    const FACTIONS = {
+      crimson:  { name: "CRIMSON",  color: "#ff4d4d" },
+      azure:    { name: "AZURE",    color: "#4da6ff" },
+      viridian: { name: "VIRIDIAN", color: "#4dff88" },
+    };
+    let FACTION = localStorage.getItem("nmc_faction") || "";
+
+    function refreshCdr() {
+      const el = document.getElementById("cdrLine");
+      if (el) el.textContent = "CDR " + PSEUDO + (FACTIONS[FACTION] ? " · " + FACTIONS[FACTION].name : "");
+    }
     function ensurePseudo() {
       while (!PSEUDO) PSEUDO = (prompt("COMMANDER — enter your callsign:", "") || "").trim().slice(0, 32);
       localStorage.setItem("nmc_pseudo", PSEUDO);
-      const cdrEl = document.getElementById("cdrLine");
-      if (cdrEl) cdrEl.textContent = "CDR " + PSEUDO;
+      refreshCdr();
+    }
+    function ensureFaction() {
+      refreshCdr();
+      if (FACTIONS[FACTION]) return;
+      const modal = document.getElementById("factionModal");
+      modal.hidden = false;
+      modal.querySelectorAll(".fm-btn").forEach((b) => b.addEventListener("click", () => {
+        FACTION = b.dataset.f;
+        localStorage.setItem("nmc_faction", FACTION);
+        modal.hidden = true; refreshCdr();
+      }, { once: true }));
+    }
+
+    // ── Zones conquérables : régions (pays) chargées en GeoJSON ───────────────
+    let REGIONS = null;
+    const codeToFeat = {};   // "FRA" -> feature.id (int, pour feature-state)
+    const regionBBox = {};   // feature.id -> [minLng, minLat, maxLng, maxLat]
+    function loadRegions() {
+      return fetch("data/regions.geojson").then((r) => r.json()).then((gj) => {
+        REGIONS = gj;
+        for (const f of gj.features) {
+          codeToFeat[f.properties.id] = f.id;
+          let mnx = 180, mny = 90, mxx = -180, mxy = -90;
+          const scan = (ring) => { for (const [x, y] of ring) {
+            if (x < mnx) mnx = x; if (x > mxx) mxx = x; if (y < mny) mny = y; if (y > mxy) mxy = y; } };
+          if (f.geometry.type === "Polygon") f.geometry.coordinates.forEach(scan);
+          else f.geometry.coordinates.forEach((p) => p.forEach(scan));
+          regionBBox[f.id] = [mnx, mny, mxx, mxy];
+        }
+        if (!map.getSource("regions")) {
+          map.addSource("regions", { type: "geojson", data: gj });
+          map.addLayer({
+            id: "regions-fill", type: "fill", source: "regions",
+            paint: {
+              "fill-color": ["match", ["feature-state", "owner"],
+                "crimson", "#ff4d4d", "azure", "#4da6ff", "viridian", "#4dff88", "#000000"],
+              "fill-opacity": ["match", ["feature-state", "owner"],
+                ["crimson", "azure", "viridian"], 0.26, 0],
+            },
+          }, "zone-borders");
+        }
+      }).catch(() => {});
+    }
+    // Ray-casting point-in-polygon
+    function pipRing(x, y, ring) {
+      let inside = false;
+      for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+        const xi = ring[i][0], yi = ring[i][1], xj = ring[j][0], yj = ring[j][1];
+        if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
+      }
+      return inside;
+    }
+    function pipPolygon(x, y, poly) {
+      if (!pipRing(x, y, poly[0])) return false;
+      for (let k = 1; k < poly.length; k++) if (pipRing(x, y, poly[k])) return false; // trous
+      return true;
+    }
+    function findZone(lng, lat) {
+      if (!REGIONS) return null;
+      for (const f of REGIONS.features) {
+        const bb = regionBBox[f.id];
+        if (!bb || lng < bb[0] || lng > bb[2] || lat < bb[1] || lat > bb[3]) continue;
+        const g = f.geometry;
+        const hit = g.type === "Polygon"
+          ? pipPolygon(lng, lat, g.coordinates)
+          : g.coordinates.some((p) => pipPolygon(lng, lat, p));
+        if (hit) return { id: f.properties.id, name: f.properties.name };
+      }
+      return null;
+    }
+    function setZoneOwner(code, owner) {
+      const fid = codeToFeat[code];
+      if (fid == null || !map.getSource("regions")) return;
+      map.setFeatureState({ source: "regions", id: fid }, { owner: owner || "" });
+    }
+    function renderScore(board) {
+      const el = document.getElementById("scoreboard");
+      if (!el || !board) return;
+      el.innerHTML = '<div class="sc-hd">WORLD CONTROL · zones</div>' +
+        Object.keys(FACTIONS).map((f) => {
+          const b = board[f] || { zones: 0 };
+          return `<div class="sc-row"><span class="sc-dot" style="color:${FACTIONS[f].color};background:${FACTIONS[f].color}"></span>${FACTIONS[f].name}<b>${b.zones}</b></div>`;
+        }).join("");
+    }
+    function syncZones() {
+      fetch("/api/zones").then((r) => r.json()).then((d) => {
+        (d.zones || []).forEach((z) => setZoneOwner(z.id, z.owner));
+        renderScore(d.board);
+      }).catch(() => {});
     }
     function addStrikeLabel(lng, lat, pseudo, weapon) {
       if (!pseudo) return;
@@ -1258,6 +1397,8 @@
       fetch("/api/strikes", {
         method: "POST", headers: { "content-type": "application/json" },
         body: JSON.stringify(payload),
+      }).then((r) => (r.ok ? r.json() : null)).then((d) => {
+        if (d && d.zone) setZoneOwner(d.zone.id, d.zone.owner);   // recolorie la zone
       }).catch(() => {});
     }
     // Rejoue une frappe historique : cratère + label, sans explosion ni POST.
@@ -1271,6 +1412,9 @@
     }
     map.on("load", () => {
       ensurePseudo();
+      ensureFaction();
+      loadRegions().then(syncZones);          // zones + coloriage + scoreboard
+      setInterval(syncZones, 20000);          // sync périodique (conquêtes des autres)
       fetch("/api/strikes?limit=500")
         .then((r) => r.json())
         .then((d) => {
