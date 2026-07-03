@@ -374,41 +374,62 @@
                    mix(hash(i+vec2(0,1)), hash(i+vec2(1,1)), f.x), f.y);
       }`;
 
-    // Cratère + zone sinistrée : dessinés par MAPLIBRE lui-même (image
-    // sources géoréférencées) — pas par Three. Une image posée par ses 4
-    // coins devient une couche de la carte, comme les tuiles satellite :
-    // fiable, native, zéro bagarre de z-buffer avec le contexte partagé.
-    let decalSeq = 0;
+    // ── Cratères + suie : UNE seule couche de symboles MapLibre (batch) ──────
+    // Chaque frappe ajoute 2 features (suie + cratère) dans une source GeoJSON
+    // partagée, au lieu d'une couche par frappe. Une couche pour des milliers
+    // de cratères → ≫ perf pour le monde persistant.
+    const decalFeatures = [];
+    const DECAL_CAP = 800;                        // ~400 frappes avant purge des plus vieilles
+    const K_DECAL = 512 / (40075017 * 256);       // px écran par mètre (mercator, à l'équateur)
+    function loadDecalImages(cb) {
+      if (!window.DECALS) { if (cb) cb(); return; }
+      const list = [["soot", window.DECALS.soot]];
+      window.DECALS.craters.forEach((u, i) => list.push(["crater" + i, u]));
+      let pending = list.length;
+      const done = () => { if (--pending === 0 && cb) cb(); };
+      list.forEach(([name, url]) => {
+        const img = new Image();
+        img.onload = () => { if (!map.hasImage(name)) map.addImage(name, img); done(); };
+        img.onerror = done;
+        img.src = url;
+      });
+    }
+    function initDecalLayer() {
+      if (map.getSource("decals")) return;
+      map.addSource("decals", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+      map.addLayer({
+        id: "decals-layer", type: "symbol", source: "decals",
+        layout: {
+          "icon-image": ["get", "icon"],
+          "icon-rotate": ["get", "rot"],
+          "icon-rotation-alignment": "map",       // tourne avec la carte
+          "icon-pitch-alignment": "map",           // posé à plat sur le sol
+          "icon-allow-overlap": true, "icon-ignore-placement": true,
+          // taille réelle ~constante en mètres : szf × 2^zoom. Le zoom DOIT être
+          // au top-level de l'interpolate ; le facteur par-feature va en sortie.
+          "icon-size": ["interpolate", ["exponential", 2], ["zoom"],
+            0, ["*", ["get", "szf"], 1],
+            24, ["*", ["get", "szf"], 16777216]],
+        },
+        paint: { "icon-opacity": 0.9 },
+      }, map.getLayer("fx-three") ? "fx-three" : undefined);
+    }
+    function pushDecal(icon, lng, lat, fullMeters, rotDeg) {
+      const cosLat = Math.max(0.2, Math.cos((lat * Math.PI) / 180));
+      decalFeatures.push({
+        type: "Feature", geometry: { type: "Point", coordinates: [lng, lat] },
+        properties: { icon, szf: (fullMeters * K_DECAL) / cosLat, rot: rotDeg },
+      });
+    }
     function addMapDecals(im) {
-      if (!window.DECALS || !map.getLayer("fx-three")) return;
-      const mpu = new maplibregl.MercatorCoordinate(im.mx, im.my, 0).meterInMercatorCoordinateUnits();
-      // 4 coins (TL,TR,BR,BL) d'un carré tourné de rot, demi-côté halfM mètres
-      const corners = (halfM, rot) => {
-        const c = Math.cos(rot), s = Math.sin(rot), h = halfM * mpu;
-        return [[-h, -h], [h, -h], [h, h], [-h, h]].map(([x, y]) => {
-          const ll = new maplibregl.MercatorCoordinate(
-            im.mx + x * c - y * s, im.my + x * s + y * c, 0).toLngLat();
-          return [ll.lng, ll.lat];
-        });
-      };
-      im.decalIds = [];
-      const add = (kind, url, halfM, rot, opacity) => {
-        const id = `decal-${kind}-${decalSeq++}`;
-        map.addSource(id, { type: "image", url, coordinates: corners(halfM, rot) });
-        map.addLayer({
-          id, type: "raster", source: id,
-          paint: {
-            "raster-opacity": 0,
-            "raster-opacity-transition": { duration: 900 },
-            "raster-fade-duration": 0,
-          },
-        }, "fx-three");   // sous les effets Three (feux/fumée par-dessus)
-        setTimeout(() => map.getLayer(id) && map.setPaintProperty(id, "raster-opacity", opacity), 80);
-        im.decalIds.push(id);
-      };
-      add("soot", window.DECALS.soot, im.rM * 1.8, im.seed * 2.39996, 0.85);
-      const ci = Math.floor((im.seed % 1) * window.DECALS.craters.length) % window.DECALS.craters.length;
-      add("crater", window.DECALS.craters[ci], im.craterM, im.seed * 5.13, 0.97);
+      if (!map.getSource("decals")) return;
+      const ll = new maplibregl.MercatorCoordinate(im.mx, im.my, 0).toLngLat();
+      const nC = (window.DECALS && window.DECALS.craters.length) || 1;
+      const ci = Math.floor((im.seed % 1) * nC) % nC;
+      pushDecal("soot", ll.lng, ll.lat, im.rM * 1.8 * 2, (im.seed * 137) % 360);        // suie
+      pushDecal("crater" + ci, ll.lng, ll.lat, im.craterM * 2, (im.seed * 293) % 360);  // cratère
+      while (decalFeatures.length > DECAL_CAP) decalFeatures.shift();
+      map.getSource("decals").setData({ type: "FeatureCollection", features: decalFeatures });
     }
 
     // Flash au sol + onde de choc + feux qui brûlent (blending additif).
@@ -708,8 +729,9 @@
         this.scene.add(g);
         this._placeImpacts();
 
-        // Cap mémoire : au-delà de 40 frappes, on retire les plus anciennes
-        // (meshes Three + couches decal MapLibre).
+        // Cap mémoire des effets Three (feux/fumée) : au-delà de 40 frappes,
+        // on retire les plus anciennes. Les cratères (decals) vivent dans leur
+        // propre couche batchée avec son propre cap (DECAL_CAP).
         while (impacts.length > 40) {
           const old = impacts.shift();
           if (old.group) {
@@ -717,10 +739,6 @@
             old.group.children.forEach((c) => { if (c.geometry !== this._quadGeo) c.geometry.dispose(); });
             old.mats.forEach((m) => m.dispose());
           }
-          (old.decalIds || []).forEach((id) => {
-            if (map.getLayer(id)) map.removeLayer(id);
-            if (map.getSource(id)) map.removeSource(id);
-          });
         }
       },
 
@@ -1494,15 +1512,18 @@
     map.on("load", () => {
       ensurePseudo();
       // Factions/conquête gelées (jeu solo) — pas de modal ni de zones colorées.
-      fetch("/api/strikes?limit=500")
-        .then((r) => r.json())
-        .then((d) => {
-          (d.strikes || []).forEach(replayStrike);
-          updateRadar();
-          if (d.strikes && d.strikes.length)
-            setStatus(`${d.strikes.length} strikes reloaded — welcome CDR ${PSEUDO}`);
-        })
-        .catch(() => {});
+      loadDecalImages(() => {           // sprites de cratère enregistrés…
+        initDecalLayer();               // …puis la couche batchée unique
+        fetch("/api/strikes?limit=500")
+          .then((r) => r.json())
+          .then((d) => {
+            (d.strikes || []).forEach(replayStrike);   // rejoue dans la couche batchée
+            updateRadar();
+            if (d.strikes && d.strikes.length)
+              setStatus(`${d.strikes.length} strikes reloaded — welcome CDR ${PSEUDO}`);
+          })
+          .catch(() => {});
+      });
     });
 
     // ── Mode ARMÉ : le clic gauche ne tire PAS tant qu'on n'a pas ENGAGE ──────
