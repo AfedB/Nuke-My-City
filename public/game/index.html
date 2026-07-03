@@ -938,10 +938,23 @@
     }
     addEventListener("pointerdown", () => { audio(); wantAmbient = true; startAmbient(); }, { once: true });
 
+    // Blip UI procédural (clic de bouton) — court, sec, non spatialisé
+    function uiClick(freq = 620, vol = 0.11) {
+      const c = audio(), t = c.currentTime;
+      const o = c.createOscillator(), g = c.createGain();
+      o.type = "square";
+      o.frequency.setValueAtTime(freq, t);
+      o.frequency.exponentialRampToValueAtTime(freq * 0.55, t + 0.05);
+      g.gain.setValueAtTime(vol, t);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.07);
+      o.connect(g).connect(master); o.start(t); o.stop(t + 0.09);
+    }
+
     loadSfx("radio", "military-radio-communication.mp3");
     loadSfx("heli", "helicopter.mp3");
     loadSfx("launch", "rocket-launcher.mp3");
     loadSfx("impact", "bomb-impact.mp3");
+    loadSfx("confirm", "acceptation-sound.mp3");
 
     // ── Feedback écran : lueur ambrée + shake ───────────────────────────────
     const flashEl = document.getElementById("flash");
@@ -1114,8 +1127,8 @@
       const mpu = mc.meterInMercatorCoordinateUnits();
       const th = Math.random() * Math.PI * 2;
       const dx = Math.cos(th), dy = Math.sin(th);
-      const ALT = 140, SPAWN = 1500, HOVERD = 470;   // stationnaire à 470 m de la cible
-      const APPROACH_SPD = 150, DEPART_SPD = 130;
+      const ALT = 140, SPAWN = 1100, HOVERD = 0;     // stationne PILE au-dessus du clic
+      const APPROACH_SPD = 200, DEPART_SPD = 150;
       const FIRE_DELAY = 0.4, FIRE_DUR = w.count * 0.18 + 0.5;
       const tApproach = (SPAWN - HOVERD) / APPROACH_SPD;
       const tHoverEnd = tApproach + FIRE_DELAY + FIRE_DUR;
@@ -1305,6 +1318,7 @@
       modal.querySelectorAll(".fm-btn").forEach((b) => b.addEventListener("click", () => {
         FACTION = b.dataset.f;
         localStorage.setItem("nmc_faction", FACTION);
+        if (!playSfx("confirm", null, null, 0.6)) uiClick(920);
         modal.hidden = true; refreshCdr();
       }, { once: true }));
     }
@@ -1464,7 +1478,11 @@
       mapEl.classList.toggle("armed", armed);
       engageTxt.textContent = armed ? "● ARMED" : "ENGAGE";
     }
-    function arm() { armed = true; refreshEngage(); setStatus(`ARMED · ${SHORT[currentWeapon]} — select target`); }
+    function arm() {
+      armed = true; refreshEngage();
+      if (!playSfx("confirm", null, null, 0.5)) uiClick(880);
+      setStatus(`ARMED · ${SHORT[currentWeapon]} — select target`);
+    }
     function disarm() { armed = false; refreshEngage(); }
 
     engageBtn.addEventListener("click", () => (armed ? disarm() : arm()));
@@ -1500,14 +1518,14 @@
       wGrid.hidden = !show;
       wTrigger.classList.toggle("open", show);
     }
-    wTrigger.addEventListener("click", (e) => { e.stopPropagation(); toggleGrid(); });
+    wTrigger.addEventListener("click", (e) => { e.stopPropagation(); uiClick(520); toggleGrid(); });
     wGrid.querySelectorAll(".wtile").forEach((t) =>
-      t.addEventListener("click", () => { selectWeapon(t.dataset.w); toggleGrid(false); }));
+      t.addEventListener("click", () => { uiClick(720); selectWeapon(t.dataset.w); toggleGrid(false); }));
     document.addEventListener("click", (e) => { if (!wPicker.contains(e.target)) toggleGrid(false); });
     addEventListener("keydown", (e) => {
       if (e.key === "Escape") toggleGrid(false);
       const k = { 1: "mk1", 2: "rkt", 3: "moab", 4: "nuke" }[e.key];
-      if (k) selectWeapon(k);
+      if (k) { uiClick(720); selectWeapon(k); }
     });
     selectWeapon("mk1");
 
@@ -1519,6 +1537,7 @@
       dubai:{center:[55.2744,25.1972],zoom:11.8},
     };
     document.getElementById("jump").addEventListener("change", (e) => {
+      uiClick(560);
       const v = VILLES[e.target.value];
       if (v) map.flyTo({ ...v, pitch: 30, bearing: -15, duration: 3000, essential: true });
       e.target.value = "";
