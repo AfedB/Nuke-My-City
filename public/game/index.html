@@ -30,9 +30,6 @@
     .maplibregl-ctrl-bottom-left,
     .maplibregl-ctrl-bottom-right { display: none !important; }
 
-    /* léger flou pendant le voyage (jump to) — masque le chargement des tuiles */
-    #map .maplibregl-canvas { transition: filter .35s ease; }
-    #map.flying .maplibregl-canvas { filter: blur(2.5px) brightness(.94); }
 
     /* ── Marque + callsign (haut gauche) ── */
     #brand { position:absolute; top:12px; left:16px; z-index:10; pointer-events:none; }
@@ -43,11 +40,15 @@
       align-items:center; justify-content:center; font-size:16px; line-height:1; padding:0;
       color:#b8ffc9; background:rgba(20,40,28,.6); border:1px solid rgba(96,255,140,.3); border-radius:6px; }
     #radioBtn:hover, #labelsBtn:hover { background:rgba(30,56,40,.85); }
+    #labelsBtn.on { background:rgba(90,55,10,.8); border-color:#ffb84d; }   /* tags affichés */
 
     /* ── Lecture cible (haut droite) ── */
     #coords { position:absolute; top:12px; right:16px; z-index:10; color:#8dffab;
       background:rgba(0,10,4,.55); border:1px solid rgba(96,255,140,.22);
       padding:5px 11px; border-radius:5px; font-size:11px; letter-spacing:.08em; }
+    #fps { position:absolute; top:44px; right:16px; z-index:10; color:#7dd98f; opacity:.72;
+      font-family:"Cascadia Mono", ui-monospace, Consolas, monospace;
+      font-size:10px; letter-spacing:.1em; }
 
     #status { position:absolute; bottom:92px; left:16px; z-index:12; color:#7dd98f;
       background:rgba(0,10,4,.55); padding:3px 8px; border-radius:4px; font-size:10px; opacity:.85; }
@@ -206,6 +207,7 @@
     <div class="cdr" id="cdrLine">CDR ——</div>
   </div>
   <div id="coords">⌖ AWAITING TARGET</div>
+  <div id="fps">–– FPS</div>
   <div id="status">booting…</div>
 
   <div id="hud">
@@ -845,6 +847,21 @@
     };
 
     window.__fx = fxLayer;   // debug console
+
+    // Compteur FPS : débit réel de frames (chute pendant les gros effets).
+    (function () {
+      const el = document.getElementById("fps");
+      let frames = 0, last = performance.now();
+      (function tick() {
+        frames++;
+        const t = performance.now();
+        if (t - last >= 500) {
+          if (el) el.textContent = Math.round((frames * 1000) / (t - last)) + " FPS";
+          frames = 0; last = t;
+        }
+        requestAnimationFrame(tick);
+      })();
+    })();
     window.__heli = (lng, lat) => spawnHeliStrike(
       { lng: lng ?? map.getCenter().lng, lat: lat ?? map.getCenter().lat }, WEAPONS.rkt);
     map.on("load", () => {
@@ -1456,9 +1473,8 @@
         renderScore(d.board);
       }).catch(() => {});
     }
-    // Tags de frappe : cachés par défaut (ils masquent les cratères), affichés
-    // au survol du cratère, ou tous d'un coup via le toggle TAGS.
-    const strikeLabels = [];   // { lng, lat, el }
+    // Tags de frappe : toggle net ON/OFF (ils masquent les cratères sinon).
+    const strikeLabels = [];   // { el }
     let labelsVisible = localStorage.getItem("nmc_labels") === "1";
     function addStrikeLabel(lng, lat, pseudo, weapon) {
       if (!pseudo) return;
@@ -1467,25 +1483,17 @@
       const icon = weapon === "nuke" ? "☢️" : weapon === "moab" ? "💥" : weapon === "rkt" ? "🚀" : "☠️";
       el.textContent = `${icon} ${pseudo}`;
       new maplibregl.Marker({ element: el, anchor: "bottom" }).setLngLat([lng, lat]).addTo(map);
-      strikeLabels.push({ lng, lat, el });
+      strikeLabels.push({ el });
     }
     function applyLabels() {
       const b = document.getElementById("labelsBtn");
-      if (b) { b.textContent = labelsVisible ? "🏷️" : "🚫"; b.title = "Tags : " + (labelsVisible ? "ON" : "au survol"); }
+      if (b) { b.classList.toggle("on", labelsVisible); b.title = "Tags : " + (labelsVisible ? "affichés" : "cachés"); }
       strikeLabels.forEach((s) => s.el.classList.toggle("show", labelsVisible));
     }
     document.getElementById("labelsBtn").addEventListener("click", () => {
       labelsVisible = !labelsVisible;
       localStorage.setItem("nmc_labels", labelsVisible ? "1" : "0");
       applyLabels(); uiClick(600);
-    });
-    // survol : affiche les tags proches du curseur quand ils sont cachés
-    map.on("mousemove", (e) => {
-      if (labelsVisible || !strikeLabels.length) return;
-      for (const s of strikeLabels) {
-        const sp = map.project([s.lng, s.lat]);
-        s.el.classList.toggle("show", Math.hypot(sp.x - e.point.x, sp.y - e.point.y) < 34);
-      }
     });
     applyLabels();   // état initial du bouton
     function saveStrike(payload) {
@@ -1600,14 +1608,7 @@
     document.getElementById("jump").addEventListener("change", (e) => {
       uiClick(560);
       const v = VILLES[e.target.value];
-      if (v) {
-        const mapEl = document.getElementById("map");
-        mapEl.classList.add("flying");
-        const clear = () => mapEl.classList.remove("flying");
-        map.once("moveend", () => setTimeout(clear, 150));   // se lève dès l'arrivée
-        setTimeout(clear, 3600);   // filet de sécurité
-        map.flyTo({ ...v, pitch: 30, bearing: -15, duration: 3000, essential: true });
-      }
+      if (v) map.flyTo({ ...v, pitch: 30, bearing: -15, duration: 3000, essential: true });
       e.target.value = "";
     });
 
