@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { desc, eq } from "drizzle-orm";
 import { db } from "@/db";
 import { players, strikes, zones } from "@/db/schema";
-import { isFaction, WEAPON_WEIGHT, dominant, type Control } from "@/lib/game";
+import { isFaction, WEAPON_WEIGHT, capturedOwner, type Control } from "@/lib/game";
 
 export const runtime = "nodejs";
 
@@ -36,7 +36,7 @@ export async function POST(req: NextRequest) {
   } catch {
     return NextResponse.json({ error: "invalid json" }, { status: 400 });
   }
-  const { pseudo, faction, lng, lat, weapon, seed, zoneId, zoneName } =
+  const { pseudo, faction, lng, lat, weapon, seed, zoneId, zoneName, zoneCap } =
     (body ?? {}) as Record<string, unknown>;
 
   if (typeof pseudo !== "string" || !pseudo.trim() || pseudo.length > 32)
@@ -68,20 +68,22 @@ export async function POST(req: NextRequest) {
     .returning();
 
   // ── Contrôle de zone : frappe en mer/hors zone → pas de mise à jour ──
-  let zone: { id: string; owner: string | null; control: Control } | null = null;
+  // La possession n'arrive qu'une fois la jauge (cap ∝ superficie) remplie.
+  const cap = typeof zoneCap === "number" && zoneCap > 0 ? Math.round(zoneCap) : 100;
+  let zone: { id: string; owner: string | null; control: Control; cap: number } | null = null;
   if (fac && zid) {
     const weight = WEAPON_WEIGHT[weapon] ?? 1;
     zone = await db.transaction(async (tx) => {
       const existing = await tx.select().from(zones).where(eq(zones.id, zid)).for("update");
       const control: Control = { ...((existing[0]?.control as Control) ?? {}) };
       control[fac] = (control[fac] ?? 0) + weight;
-      const owner = dominant(control);
+      const owner = capturedOwner(control, cap);
       if (existing[0]) {
         await tx.update(zones).set({ control, owner, updatedAt: new Date() }).where(eq(zones.id, zid));
       } else {
         await tx.insert(zones).values({ id: zid, name: zname ?? zid, control, owner });
       }
-      return { id: zid, owner, control };
+      return { id: zid, owner, control, cap };
     });
   }
 

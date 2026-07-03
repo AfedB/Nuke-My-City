@@ -27,3 +27,11 @@ export function dominant(control: Control): string | null {
   }
   return max > 0 ? best : null;
 }
+
+// Propriétaire RÉEL : la faction en tête, mais seulement si elle a rempli la
+// jauge de conquête (capacité ∝ superficie du pays). Sinon zone contestée.
+export function capturedOwner(control: Control, cap: number): string | null {
+  const lead = dominant(control);
+  if (!lead) return null;
+  return control[lead] >= cap ? lead : null;
+}

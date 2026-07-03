@@ -1272,7 +1272,8 @@
       map.triggerRepaint();
       const zone = findZone(lngLat.lng, lngLat.lat);   // pays touché (ou null si en mer)
       saveStrike({ pseudo: PSEUDO, faction: FACTION || null, lng: lngLat.lng, lat: lngLat.lat,
-        weapon: key, seed, zoneId: zone ? zone.id : null, zoneName: zone ? zone.name : null });
+        weapon: key, seed, zoneId: zone ? zone.id : null, zoneName: zone ? zone.name : null,
+        zoneCap: zone ? zone.cap : null });
       addRadarBlip(lngLat.lng, lngLat.lat, true); updateRadar();
     }
 
@@ -1311,12 +1312,15 @@
     // ── Zones conquérables : régions (pays) chargées en GeoJSON ───────────────
     let REGIONS = null;
     const codeToFeat = {};   // "FRA" -> feature.id (int, pour feature-state)
+    const codeToCap = {};    // "FRA" -> capacité de conquête (∝ superficie)
     const regionBBox = {};   // feature.id -> [minLng, minLat, maxLng, maxLat]
+    const FACS = ["crimson", "azure", "viridian"];
     function loadRegions() {
       return fetch("data/regions.geojson").then((r) => r.json()).then((gj) => {
         REGIONS = gj;
         for (const f of gj.features) {
           codeToFeat[f.properties.id] = f.id;
+          codeToCap[f.properties.id] = f.properties.cap || 100;
           let mnx = 180, mny = 90, mxx = -180, mxy = -90;
           const scan = (ring) => { for (const [x, y] of ring) {
             if (x < mnx) mnx = x; if (x > mxx) mxx = x; if (y < mny) mny = y; if (y > mxy) mxy = y; } };
@@ -1326,17 +1330,29 @@
         }
         if (!map.getSource("regions")) {
           map.addSource("regions", { type: "geojson", data: gj });
+          const prog = ["min", 1, ["coalesce", ["feature-state", "pct"], 0]]; // 0..1
           map.addLayer({
             id: "regions-fill", type: "fill", source: "regions",
             paint: {
-              "fill-color": ["match", ["feature-state", "owner"],
+              // couleur = faction en tête (possédée ou en siège)
+              "fill-color": ["match", ["feature-state", "lead"],
                 "crimson", "#ff4d4d", "azure", "#4da6ff", "viridian", "#4dff88", "#000000"],
-              "fill-opacity": ["match", ["feature-state", "owner"],
-                ["crimson", "azure", "viridian"], 0.26, 0],
+              // opacité : forte si possédée, faible+croissante si contestée
+              "fill-opacity": ["case",
+                ["in", ["feature-state", "owner"], ["literal", ["crimson", "azure", "viridian"]]],
+                  ["+", 0.16, ["*", 0.24, prog]],
+                ["in", ["feature-state", "lead"], ["literal", ["crimson", "azure", "viridian"]]],
+                  ["+", 0.05, ["*", 0.13, prog]],
+                0],
             },
           }, "zone-borders");
         }
       }).catch(() => {});
+    }
+    function leadOf(control) {
+      let best = null, max = -1;
+      for (const k in control) if (control[k] > max) { max = control[k]; best = k; }
+      return max > 0 ? best : null;
     }
     // Ray-casting point-in-polygon
     function pipRing(x, y, ring) {
@@ -1361,14 +1377,15 @@
         const hit = g.type === "Polygon"
           ? pipPolygon(lng, lat, g.coordinates)
           : g.coordinates.some((p) => pipPolygon(lng, lat, p));
-        if (hit) return { id: f.properties.id, name: f.properties.name };
+        if (hit) return { id: f.properties.id, name: f.properties.name, cap: f.properties.cap || 100 };
       }
       return null;
     }
-    function setZoneOwner(code, owner) {
+    function setZoneState(code, owner, lead, pct) {
       const fid = codeToFeat[code];
       if (fid == null || !map.getSource("regions")) return;
-      map.setFeatureState({ source: "regions", id: fid }, { owner: owner || "" });
+      map.setFeatureState({ source: "regions", id: fid },
+        { owner: owner || "", lead: lead || "", pct: pct || 0 });
     }
     function renderScore(board) {
       const el = document.getElementById("scoreboard");
@@ -1381,7 +1398,11 @@
     }
     function syncZones() {
       fetch("/api/zones").then((r) => r.json()).then((d) => {
-        (d.zones || []).forEach((z) => setZoneOwner(z.id, z.owner));
+        (d.zones || []).forEach((z) => {
+          const cap = codeToCap[z.id] || 100;
+          const pct = z.lead ? (z.control[z.lead] || 0) / cap : 0;
+          setZoneState(z.id, z.owner, z.lead, pct);
+        });
         renderScore(d.board);
       }).catch(() => {});
     }
@@ -1398,7 +1419,11 @@
         method: "POST", headers: { "content-type": "application/json" },
         body: JSON.stringify(payload),
       }).then((r) => (r.ok ? r.json() : null)).then((d) => {
-        if (d && d.zone) setZoneOwner(d.zone.id, d.zone.owner);   // recolorie la zone
+        if (d && d.zone) {
+          const z = d.zone, lead = leadOf(z.control);
+          const pct = z.cap ? (z.control[lead] || 0) / z.cap : 0;
+          setZoneState(z.id, z.owner, lead, pct);   // recolorie + progression
+        }
       }).catch(() => {});
     }
     // Rejoue une frappe historique : cratère + label, sans explosion ni POST.

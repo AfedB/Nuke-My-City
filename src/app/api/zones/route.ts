@@ -1,28 +1,27 @@
 import { NextResponse } from "next/server";
-import { isNotNull } from "drizzle-orm";
 import { db } from "@/db";
 import { zones } from "@/db/schema";
-import { FACTIONS, type Control } from "@/lib/game";
+import { FACTIONS, dominant, type Control } from "@/lib/game";
 
 export const runtime = "nodejs";
 
-// GET /api/zones → zones possédées (pour colorier la carte) + scoreboard factions.
+// GET /api/zones → toutes les zones ayant du contrôle (owner + points par
+// faction, pour colorier/afficher la progression) + scoreboard factions.
 export async function GET() {
-  const owned = await db
-    .select({ id: zones.id, name: zones.name, owner: zones.owner })
-    .from(zones)
-    .where(isNotNull(zones.owner));
+  const all = await db
+    .select({ id: zones.id, name: zones.name, owner: zones.owner, control: zones.control })
+    .from(zones);
 
-  // Scoreboard : nombre de zones possédées + points totaux par faction.
-  const all = await db.select({ owner: zones.owner, control: zones.control }).from(zones);
   const board: Record<string, { zones: number; points: number }> = {};
   for (const f of FACTIONS) board[f] = { zones: 0, points: 0 };
-  for (const z of all) {
-    if (z.owner && board[z.owner]) board[z.owner].zones++;
-    for (const [f, v] of Object.entries((z.control as Control) ?? {})) {
-      if (board[f]) board[f].points += v;
-    }
-  }
 
-  return NextResponse.json({ zones: owned, board });
+  const out = all.map((z) => {
+    const control = (z.control as Control) ?? {};
+    const lead = dominant(control);
+    if (z.owner && board[z.owner]) board[z.owner].zones++;
+    for (const [f, v] of Object.entries(control)) if (board[f]) board[f].points += v;
+    return { id: z.id, owner: z.owner, lead, control };
+  });
+
+  return NextResponse.json({ zones: out, board });
 }
