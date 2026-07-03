@@ -22,34 +22,99 @@
   <style>
     html, body, #map { width:100%; height:100%; margin:0; padding:0; overflow:hidden;
       font-family:"Cascadia Mono", ui-monospace, Consolas, monospace; background:#000; }
-    #map canvas { cursor: crosshair; }
+    /* curseur : grab pour naviguer (géré par MapLibre), crosshair une fois ARMÉ */
+    #map.armed .maplibregl-canvas,
+    #map.armed .maplibregl-canvas:active { cursor: crosshair !important; }
 
-    /* ── HUD militaire ── */
-    #panel {
-      position:absolute; top:12px; left:12px; z-index:10;
-      background:rgba(6,12,9,.86); color:#b8ffc9; padding:12px 14px; border-radius:6px;
-      border:1px solid rgba(96,255,140,.28);
-      backdrop-filter:blur(8px); box-shadow:0 6px 24px rgba(0,0,0,.5); max-width:300px;
-      font-size:12px;
-    }
-    #panel h1 { font-size:13px; margin:0 0 10px; font-weight:600; letter-spacing:.12em; color:#8dffab; }
-    #panel .sect { font-size:10px; opacity:.55; letter-spacing:.18em; margin:10px 0 4px; }
-    #panel button {
-      margin:2px 4px 2px 0; padding:5px 9px; border:1px solid rgba(96,255,140,.3); border-radius:4px;
-      cursor:pointer; background:rgba(20,40,28,.6); color:#b8ffc9; font-size:11px;
-      font-family:inherit; letter-spacing:.05em;
-    }
-    #panel button:hover { background:rgba(40,80,55,.7); }
-    #panel button.wbtn { min-width:74px; text-align:left; }
-    #panel button.wbtn span { display:block; font-size:9px; opacity:.6; }
-    #panel button.wbtn.sel { background:rgba(90,55,10,.75); border-color:#ffb84d; color:#ffd9a0; }
-    #panel .hint { font-size:10px; opacity:.6; margin-top:10px; line-height:1.5; }
+    /* masque l'attribution + logo MapLibre (cachés derrière la barre) */
+    .maplibregl-ctrl-bottom-left,
+    .maplibregl-ctrl-bottom-right { display: none !important; }
 
-    #status { position:absolute; bottom:8px; left:8px; z-index:10; color:#7dd98f;
-      background:rgba(0,10,4,.6); padding:3px 8px; border-radius:4px; font-size:10px; }
-    #coords { position:absolute; bottom:8px; right:8px; z-index:10; color:#8dffab;
-      background:rgba(0,10,4,.6); padding:3px 10px; border-radius:4px; font-size:11px;
-      letter-spacing:.08em; }
+    /* ── Marque + callsign (haut gauche) ── */
+    #brand { position:absolute; top:12px; left:16px; z-index:10; pointer-events:none; }
+    #brand h1 { margin:0; font-size:15px; font-weight:700; letter-spacing:.16em; color:#8dffab;
+      text-shadow:0 0 18px rgba(96,255,140,.4); }
+    #brand .cdr { margin-top:3px; font-size:10px; letter-spacing:.12em; color:#7dd98f; opacity:.85; }
+
+    /* ── Lecture cible (haut droite) ── */
+    #coords { position:absolute; top:12px; right:16px; z-index:10; color:#8dffab;
+      background:rgba(0,10,4,.55); border:1px solid rgba(96,255,140,.22);
+      padding:5px 11px; border-radius:5px; font-size:11px; letter-spacing:.08em; }
+
+    #status { position:absolute; bottom:92px; left:16px; z-index:12; color:#7dd98f;
+      background:rgba(0,10,4,.55); padding:3px 8px; border-radius:4px; font-size:10px; opacity:.85; }
+
+    /* ── HUD bar (bas) ── */
+    #hud { position:absolute; left:0; right:0; bottom:0; z-index:11; min-height:104px;
+      display:flex; align-items:center; gap:18px; padding:10px 20px;
+      background:linear-gradient(to top, rgba(3,7,5,.98), rgba(3,7,5,.7) 60%, transparent);
+      box-sizing:border-box; }
+    #hud .zone { display:flex; align-items:center; gap:14px; }   /* tout aligné verticalement */
+    #hud .zone.left { flex:1; justify-content:flex-start; }
+    #hud .zone.center { flex:none; }   /* radar parfaitement centré */
+    #hud .zone.right { flex:1; justify-content:flex-end; }
+    #hud .lbl { font-size:9px; letter-spacing:.18em; opacity:.5; margin-bottom:5px; }
+
+    .hudsel { background:rgba(20,40,28,.6); color:#b8ffc9; border:1px solid rgba(96,255,140,.3);
+      border-radius:6px; padding:9px 10px; font-family:inherit; font-size:12px; cursor:pointer;
+      min-width:150px; letter-spacing:.03em; }
+
+    /* ── Picker d'arme visuel (grille 2×2 qui s'ouvre vers le haut) ── */
+    .wpick { position:relative; }
+    .wtrigger { display:flex; align-items:center; gap:8px; min-width:150px;
+      background:rgba(20,40,28,.6); color:#b8ffc9; border:1px solid rgba(96,255,140,.3);
+      border-radius:6px; padding:8px 10px; font-family:inherit; font-size:12px; cursor:pointer;
+      letter-spacing:.03em; }
+    .wtrigger .ic { font-size:16px; }
+    .wtrigger .nm { flex:1; text-align:left; font-weight:600; }
+    .wtrigger .ca { opacity:.5; font-size:10px; transition:transform .15s; }
+    .wtrigger.open { border-color:#8dffab; }
+    .wtrigger.open .ca { transform:rotate(180deg); }
+    .wgrid { position:absolute; bottom:calc(100% + 8px); left:0; z-index:20;
+      display:grid; grid-template-columns:1fr 1fr; gap:8px; width:214px; padding:8px;
+      background:rgba(6,14,9,.97); border:1px solid rgba(96,255,140,.35); border-radius:10px;
+      box-shadow:0 10px 30px rgba(0,0,0,.6); }
+    .wgrid[hidden] { display:none; }
+    .wtile { display:flex; flex-direction:column; align-items:center; gap:3px; cursor:pointer;
+      background:rgba(16,32,22,.8); color:#b8ffc9; border:1px solid rgba(96,255,140,.22);
+      border-radius:8px; padding:12px 6px; font-family:inherit; transition:background .12s, border-color .12s; }
+    .wtile:hover { background:rgba(30,56,40,.9); }
+    .wtile .ic { font-size:28px; line-height:1; }
+    .wtile .nm { font-size:11px; font-weight:600; letter-spacing:.03em; }
+    .wtile .rr { font-size:9px; opacity:.55; text-align:center; }
+    .wtile.sel { background:rgba(90,55,10,.85); border-color:#ffb84d; color:#ffd9a0;
+      box-shadow:0 0 12px rgba(255,160,60,.3); }
+
+    /* bouton ENGAGE compact et bien arrondi (pill) */
+    #engage { cursor:pointer; font-family:inherit; font-weight:700; letter-spacing:.16em;
+      font-size:13px; padding:12px 30px; border-radius:999px; white-space:nowrap;
+      color:#08160c; background:#5aff8c; border:1px solid #8dffab;
+      box-shadow:0 0 22px rgba(90,255,140,.4); transition:background .12s, box-shadow .12s, color .12s; }
+    #engage:hover { background:#7dffa6; }
+    #engage.armed { color:#ffe4cc; background:#c23a1a; border-color:#ff6a3a;
+      animation:armedPulse .9s ease-in-out infinite; }
+    @keyframes armedPulse { 0%,100%{box-shadow:0 0 20px rgba(255,80,40,.45)} 50%{box-shadow:0 0 38px rgba(255,80,40,.9)} }
+
+    /* ── Radar (droite) ── */
+    #radar { position:relative; width:80px; height:80px; border-radius:50%; flex:none;
+      background:radial-gradient(circle, rgba(24,58,36,.55) 0%, rgba(4,12,7,.78) 72%);
+      border:1px solid rgba(96,255,140,.45); overflow:hidden;
+      box-shadow:inset 0 0 18px rgba(90,255,140,.15); }
+    #radar .ring { position:absolute; border-radius:50%; border:1px solid rgba(96,255,140,.14); }
+    #radar .ring.r1 { inset:0; } #radar .ring.r2 { inset:25%; } #radar .ring.r3 { inset:38%; }
+    #radar .cross { position:absolute; inset:6%; }
+    #radar .cross::before, #radar .cross::after { content:""; position:absolute; background:rgba(96,255,140,.14); }
+    #radar .cross::before { left:50%; top:0; bottom:0; width:1px; }
+    #radar .cross::after { top:50%; left:0; right:0; height:1px; }
+    #radar .sweep { position:absolute; inset:0; border-radius:50%;
+      background:conic-gradient(from 0deg, rgba(130,255,170,.45), rgba(130,255,170,0) 60deg);
+      animation:radarSweep 3.4s linear infinite; }
+    @keyframes radarSweep { to { transform:rotate(360deg); } }
+    #radar .blip { position:absolute; width:5px; height:5px; margin:-2.5px 0 0 -2.5px; border-radius:50%;
+      background:#8dffab; box-shadow:0 0 6px #8dffab; }
+    #radar .blip.mine { background:#ffd9a0; box-shadow:0 0 6px #ffd9a0; }
+    #radar .center { position:absolute; left:50%; top:50%; width:4px; height:4px; margin:-2px 0 0 -2px;
+      border-radius:50%; background:#eafff0; box-shadow:0 0 6px #fff; }
 
     /* ── Habillage "flux satellite" ── */
     #crt { position:absolute; inset:0; pointer-events:none; z-index:9;
@@ -76,6 +141,15 @@
       background:linear-gradient(to bottom, transparent, rgba(255,200,140,.2) 45%, #ffce8a 88%, #fff);
       filter:drop-shadow(0 0 4px rgba(255,190,110,.85)); border-radius:2px; }
 
+    /* ── Disque de rotor d'hélico (overlay DOM qui tourne vite) ── */
+    .rotordom { position:fixed; left:0; top:0; pointer-events:none; z-index:7; border-radius:50%;
+      background:conic-gradient(from 0deg,
+        rgba(232,255,238,0) 0deg, rgba(232,255,238,.6) 22deg, rgba(232,255,238,0) 55deg,
+        rgba(232,255,238,0) 180deg, rgba(232,255,238,.6) 202deg, rgba(232,255,238,0) 235deg);
+      box-shadow:0 0 7px rgba(180,255,205,.45); will-change:transform;
+      animation:rotordom .11s linear infinite; }
+    @keyframes rotordom { to { transform:rotate(360deg); } }
+
     /* ── Label pseudo flottant au-dessus d'un cratère (goofy, screenshot-able) ── */
     .strike-label { font-family:"Cascadia Mono", ui-monospace, Consolas, monospace;
       font-size:11px; font-weight:600; letter-spacing:.03em; white-space:nowrap;
@@ -90,25 +164,57 @@
   <div id="vig"></div>
   <div id="flash"></div>
 
-  <div id="panel">
+  <div id="brand">
     <h1>☢ NUKE MY CITY</h1>
-    <div class="sect">ARMEMENT (touches 1-4)</div>
-    <div id="weapons">
-      <button class="wbtn sel" data-w="mk1">MK-1<span>missile · r 150 m</span></button>
-      <button class="wbtn" data-w="rkt">RKT ×8<span>🚁 rafale · r 40 m</span></button>
-      <button class="wbtn" data-w="moab">MOAB<span>✈️ largage · r 420 m</span></button>
-      <button class="wbtn" data-w="nuke">NUKE-T<span>ogive · r 950 m</span></button>
-    </div>
-    <div class="sect">THÉÂTRE D'OPÉRATIONS</div>
-    <button data-go="paris">Paris</button>
-    <button data-go="newyork">New York</button>
-    <button data-go="sf">San Francisco</button>
-    <button data-go="tokyo">Tokyo</button>
-    <button data-go="dubai">Dubaï</button>
-    <div class="hint">CLIC GAUCHE : FEU · glisser : déplacer · clic droit : pivoter · molette : zoom</div>
+    <div class="cdr" id="cdrLine">CDR ——</div>
   </div>
-  <div id="status">init…</div>
-  <div id="coords">EN ATTENTE DE CIBLE</div>
+  <div id="coords">⌖ AWAITING TARGET</div>
+  <div id="status">booting…</div>
+
+  <div id="hud">
+    <div class="zone left">
+      <div>
+        <div class="lbl">THEATER</div>
+        <select id="jump" class="hudsel">
+          <option value="">— jump to —</option>
+          <option value="paris">Paris</option>
+          <option value="newyork">New York</option>
+          <option value="sf">San Francisco</option>
+          <option value="tokyo">Tokyo</option>
+          <option value="dubai">Dubai</option>
+        </select>
+      </div>
+      <div>
+        <div class="lbl">ARMAMENT · keys 1-4</div>
+        <div id="weaponPicker" class="wpick">
+          <button id="weaponTrigger" class="wtrigger">
+            <span class="ic">🚀</span><span class="nm">MK-1</span><span class="ca">▴</span>
+          </button>
+          <div id="weaponGrid" class="wgrid" hidden>
+            <button class="wtile sel" data-w="mk1"><span class="ic">🚀</span><span class="nm">MK-1</span><span class="rr">missile · r150m</span></button>
+            <button class="wtile" data-w="rkt"><span class="ic">🚁</span><span class="nm">RKT ×8</span><span class="rr">salvo · r40m</span></button>
+            <button class="wtile" data-w="moab"><span class="ic">✈️</span><span class="nm">MOAB</span><span class="rr">air drop · r420m</span></button>
+            <button class="wtile" data-w="nuke"><span class="ic">☢️</span><span class="nm">NUKE-T</span><span class="rr">warhead · r950m</span></button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="zone center">
+      <div style="text-align:center">
+        <div class="lbl" style="margin-bottom:6px">RADAR</div>
+        <div id="radar">
+          <div class="ring r1"></div><div class="ring r2"></div><div class="ring r3"></div>
+          <div class="cross"></div>
+          <div class="sweep"></div>
+          <div id="radarBlips"></div>
+          <div class="center"></div>
+        </div>
+      </div>
+    </div>
+    <div class="zone right">
+      <button id="engage"><span class="txt">ENGAGE</span></button>
+    </div>
+  </div>
 
   <script type="module">
     import * as THREE from "three";
@@ -147,6 +253,7 @@
       container: "map",
       style: {
         version: 8,
+        glyphs: "https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf",
         sources: {
           satellite: {
             type: "raster",
@@ -154,10 +261,43 @@
             tileSize: 256, maxzoom: 19,
             attribution: "Imagery © Esri, Maxar, Earthstar Geographics",
           },
+          // Source vectorielle libre (OpenMapTiles) : frontières + labels de lieux.
+          omt: { type: "vector", url: "https://tiles.openfreemap.org/planet" },
         },
-        layers: [{ id: "satellite", type: "raster", source: "satellite" }],
+        layers: [
+          { id: "satellite", type: "raster", source: "satellite" },
+          // ── Frontières administratives (léger, en surimpression verte) ──
+          // admin_level 4 = régions/états ; 6 = départements/comtés.
+          { id: "zone-borders", type: "line", source: "omt", "source-layer": "boundary",
+            filter: ["all",
+              ["has", "admin_level"],
+              ["<=", ["to-number", ["get", "admin_level"]], 6],
+              ["!=", ["get", "maritime"], 1]],
+            minzoom: 2,
+            paint: {
+              "line-color": "#8dffab",
+              "line-width": ["interpolate", ["linear"], ["zoom"], 5, 0.8, 10, 2, 14, 3.2],
+              "line-opacity": ["interpolate", ["linear"], ["zoom"], 4, 0.3, 8, 0.55, 13, 0.75],
+              "line-blur": 0.5,
+            } },
+          // ── Noms de villes en overlay (surgissent à partir du zoom ville) ──
+          { id: "zone-labels", type: "symbol", source: "omt", "source-layer": "place",
+            filter: ["in", ["get", "class"], ["literal", ["city", "town"]]],
+            minzoom: 6,
+            layout: {
+              "text-field": ["get", "name"],
+              "text-font": ["Noto Sans Bold"],
+              "text-size": ["interpolate", ["linear"], ["zoom"], 7, 11, 12, 18, 15, 24],
+              "text-transform": "uppercase", "text-letter-spacing": 0.12,
+              "text-max-width": 9,
+            },
+            paint: {
+              "text-color": "#d6ffe2", "text-halo-color": "rgba(3,12,6,0.9)", "text-halo-width": 1.6,
+              "text-opacity": ["interpolate", ["linear"], ["zoom"], 6, 0.5, 10, 0.85],
+            } },
+        ],
       },
-      center: [2.2945, 48.8584], zoom: 15.8, pitch: 30, bearing: -15,
+      center: [2.3490, 48.8560], zoom: 12.4, pitch: 30, bearing: -15,
       maxPitch: 35, maxZoom: 17.5, minZoom: 2.5,
       antialias: true,
     });
@@ -365,10 +505,16 @@
       void main(){
         vec2 p = vUv - 0.5;
         float r = length(p) * 2.0;
+        if (r > 1.0) discard;
         float a = atan(p.y, p.x);
-        float blades = pow(abs(sin(a * 2.0 - uTime * 26.0)), 8.0);   // 4 pales
-        float alpha = (0.10 + 0.55 * blades) * smoothstep(1.0, 0.90, r) * step(0.12, r);
-        gl_FragColor = vec4(vec3(0.12, 0.12, 0.13), alpha);
+        // arc de flou de rotor : une pale claire qui balaie + halo du disque
+        float blade = pow(abs(sin(a - uTime * 30.0)), 6.0)
+                    + pow(abs(sin(a - uTime * 30.0 - 3.14159)), 6.0);
+        float disc = smoothstep(1.0, 0.75, r) * 0.22;            // halo permanent
+        float ring = (1.0 - smoothstep(0.9, 1.0, r)) * 0.35;     // liseré du bout de pale
+        float alpha = clamp(disc + ring + blade * 0.6 * smoothstep(1.0, 0.85, r), 0.0, 0.95);
+        vec3 col = mix(vec3(0.60, 0.75, 0.65), vec3(0.90, 1.0, 0.92), blade);
+        gl_FragColor = vec4(col, alpha);
       }`;
 
 
@@ -394,6 +540,7 @@
         this.scene.add(sun);
         this.aircraft = [];
         this._lookTmp = new THREE.Vector3();
+        this._projV = new THREE.Vector3();   // projection écran des overlays (rotor DOM)
         this._updateOrigin();
         map.on("moveend", () => this._updateOrigin());
       },
@@ -401,7 +548,12 @@
       addAircraft(craft) {
         craft.obj.traverse((c) => { c.frustumCulled = false; });
         this.scene.add(craft.obj);
-        if (craft.rotor) this.scene.add(craft.rotor);   // disque de rotor (overlay plat)
+        if (craft.rotorDom) {                            // disque de rotor en overlay DOM
+          const el = document.createElement("div");
+          el.className = "rotordom";
+          document.body.appendChild(el);
+          craft.rotorDomEl = el;
+        }
         // traînée : ring-buffer de positions absolues (mercator, doubles JS)
         if (craft.trail) {
           const N = 42;
@@ -539,7 +691,8 @@
           const a = this.aircraft[i];
           if (!a.update(t)) {
             this.scene.remove(a.obj);
-            if (a.rotor) this.scene.remove(a.rotor);
+            if (a.rotorDomEl) { a.rotorDomEl.remove(); a.rotorDomEl = null; }
+            if (a.sound) stopLoop(a.sound);
             if (a._trail) {
               this.scene.remove(a._trail.obj);
               a._trail.geo.dispose(); a._trail.mat.dispose();
@@ -549,6 +702,24 @@
           }
           a.obj.position.set(a.mx - o.x, a.my - o.y, a.zM * mpu);
           a.obj.scale.setScalar(a.lenM * mpu);
+          if (a.sound) updateLoopSpatial(a.sound, a.mx, a.my);   // volume/pan hélico selon distance
+          // disque de rotor DOM : projeté au point 3D de l'hélico (à SON altitude,
+          // via la matrice caméra) → tombe pile dessus, pas au sol.
+          if (a.rotorDomEl) {
+            const cw = map.getCanvas().clientWidth, ch = map.getCanvas().clientHeight;
+            const bz = (a.zM + (a.rotorLiftM || 6)) * mpu;
+            const proj = (px, py) => {
+              this._projV.set(px, py, bz).applyMatrix4(this.camera.projectionMatrix);
+              return { x: (this._projV.x * 0.5 + 0.5) * cw, y: (-this._projV.y * 0.5 + 0.5) * ch };
+            };
+            const c = proj(a.mx - o.x, a.my - o.y);
+            const e = proj(a.mx - o.x + a.rotorDiamM * mpu, a.my - o.y);
+            const dia = Math.max(8, Math.hypot(e.x - c.x, e.y - c.y));
+            const s = a.rotorDomEl.style;
+            s.width = s.height = dia + "px";
+            s.left = (c.x - dia / 2) + "px";
+            s.top = (c.y - dia / 2) + "px";
+          }
           // disque de rotor : posé à plat (plan XY, normale +Z = haut), spin en shader
           if (a.rotor) {
             a.rotor.position.set(a.mx - o.x, a.my - o.y, (a.zM + a.rotorLiftM) * mpu);
@@ -598,6 +769,8 @@
     };
 
     window.__fx = fxLayer;   // debug console
+    window.__heli = (lng, lat) => spawnHeliStrike(
+      { lng: lng ?? map.getCenter().lng, lat: lat ?? map.getCenter().lat }, WEAPONS.rkt);
     map.on("load", () => {
       try { map.addLayer(fxLayer); setStatus("console armée — clic gauche pour tirer"); }
       catch (e) { setStatus("err addLayer: " + e.message); }
@@ -651,6 +824,86 @@
       g2.gain.exponentialRampToValueAtTime(0.001, t + 1.9);
       o.connect(g2).connect(master); o.start(t); o.stop(t + 2);
     }
+
+    // ── Banque de samples + spatialisation par distance ──────────────────────
+    // OUI : les frappes et SFX d'aéronef jouent au volume selon leur distance
+    // au CENTRE de la vue (portée ≈ largeur visible → dépend du zoom), avec un
+    // panoramique gauche/droite. Loin/hors écran = discret ; au centre = fort.
+    const SFX = {};
+    function loadSfx(name, file) {
+      fetch("assets/sounds/" + file).then((r) => r.arrayBuffer())
+        .then((b) => audio().decodeAudioData(b))
+        .then((buf) => { SFX[name] = buf; if (name === "radio" && wantAmbient) startAmbient(); })
+        .catch(() => {});
+    }
+    function spatialMerc(mx, my) {
+      const c = map.getCenter();
+      const cM = maplibregl.MercatorCoordinate.fromLngLat([c.lng, c.lat], 0);
+      const mpu = cM.meterInMercatorCoordinateUnits();
+      const dxM = (mx - cM.x) / mpu, dyM = (my - cM.y) / mpu;
+      const dist = Math.hypot(dxM, dyM);
+      const b = map.getBounds();
+      const halfW = (maplibregl.MercatorCoordinate.fromLngLat([b.getEast(), c.lat]).x
+                   - maplibregl.MercatorCoordinate.fromLngLat([b.getWest(), c.lat]).x) / (2 * mpu);
+      const ref = Math.max(300, halfW);
+      const tt = dist / ref;
+      return { gain: 1 / (1 + tt * tt * 2.2), pan: Math.max(-1, Math.min(1, dxM / ref)) };
+    }
+    function spatialAt(lng, lat) {
+      const m = maplibregl.MercatorCoordinate.fromLngLat([lng, lat], 0);
+      return spatialMerc(m.x, m.y);
+    }
+    // One-shot spatialisé (retourne false si le sample n'est pas encore chargé)
+    function playSfx(name, lng, lat, base = 1) {
+      const buf = SFX[name]; if (!buf) return false;
+      const c = audio();
+      const src = c.createBufferSource(); src.buffer = buf;
+      const g = c.createGain();
+      const sp = lng == null ? { gain: 1, pan: 0 } : spatialAt(lng, lat);
+      g.gain.value = base * sp.gain;
+      if (c.createStereoPanner) {
+        const p = c.createStereoPanner(); p.pan.value = sp.pan;
+        src.connect(g).connect(p).connect(master);
+      } else src.connect(g).connect(master);
+      src.start();
+      return true;
+    }
+    // Boucle spatialisée suivie (hélico) : gain/pan mis à jour chaque frame
+    function playLoopSpatial(name, base) {
+      const buf = SFX[name]; if (!buf) return null;
+      const c = audio();
+      const src = c.createBufferSource(); src.buffer = buf; src.loop = true;
+      const g = c.createGain(); g.gain.value = 0;
+      let p = null;
+      if (c.createStereoPanner) { p = c.createStereoPanner(); src.connect(g).connect(p).connect(master); }
+      else src.connect(g).connect(master);
+      try { src.start(); } catch (e) {}
+      return { src, g, p, base };
+    }
+    function updateLoopSpatial(h, mx, my) {
+      if (!h) return;
+      const sp = spatialMerc(mx, my);
+      h.g.gain.value = h.base * sp.gain;
+      if (h.p) h.p.pan.value = sp.pan;
+    }
+    function stopLoop(h) { if (h) { try { h.src.stop(); } catch (e) {} } }
+
+    // Radio militaire d'ambiance en boucle (démarre au 1er geste — autoplay)
+    let radioNode = null, wantAmbient = false;
+    function startAmbient() {
+      if (radioNode || !SFX.radio) return;
+      const c = audio();
+      const src = c.createBufferSource(); src.buffer = SFX.radio; src.loop = true;
+      const g = c.createGain(); g.gain.value = 0.22;
+      src.connect(g).connect(master); try { src.start(); } catch (e) {}
+      radioNode = src;
+    }
+    addEventListener("pointerdown", () => { audio(); wantAmbient = true; startAmbient(); }, { once: true });
+
+    loadSfx("radio", "military-radio-communication.mp3");
+    loadSfx("heli", "helicopter.mp3");
+    loadSfx("launch", "rocket-launcher.mp3");
+    loadSfx("impact", "bomb-impact.mp3");
 
     // ── Feedback écran : lueur ambrée + shake ───────────────────────────────
     const flashEl = document.getElementById("flash");
@@ -831,20 +1084,14 @@
       const t0 = now();
       let fireT0 = null, fired = 0;
 
-      // disque de rotor : overlay horizontal SÉPARÉ (pas enfant du fuselage
-      // incliné, sinon il passe de profil et disparaît). Animé en shader.
+      // Rotor : rendu en OVERLAY DOM (un simple Mesh dans la scène Three
+      // partagée avec MapLibre refuse de s'afficher — cf. debug ; le DOM est
+      // fiable et se cale sur la projection écran de l'hélico).
       const heliObj = MODELS.heli.clone();
-      const rotorMat = new THREE.ShaderMaterial({
-        vertexShader: QUAD_VERT, fragmentShader: ROTOR_FRAG,
-        transparent: true, depthWrite: false, depthTest: false,
-        uniforms: { uTime: { value: 0 } },
-      });
-      const rotor = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), rotorMat);
-      rotor.frustumCulled = false; rotor.renderOrder = 7;
-
       const heli = {
         obj: heliObj, lenM: 26, mx: 0, my: 0, zM: ALT, hx: dx, hy: dy,
-        animMats: [rotorMat], rotor, rotorLiftM: 7, rotorM: 26,
+        rotorDom: true, rotorDiamM: 24,
+        trail: { sizeM: 6, life: 2.0, color: 0xbfc6c2 },   // fine traînée d'échappement
         update(t) {
           const e = t - t0;
           let d;   // distance signée à la cible le long de la trajectoire (m)
@@ -865,13 +1112,15 @@
           return d < 1200;
         },
       };
+      heli.sound = playLoopSpatial("heli", 0.55);   // rotor en boucle, suivi en distance
       fxLayer.addAircraft(heli);
       function fireRocket(i, h) {
-        // la rafale marche vers la cible : la dernière roquette tape le clic
-        const off = (i - (w.count - 1)) * w.spacing;
+        // la salve rake une ligne CENTRÉE sur le clic (± motif symétrique)
+        const off = (i - (w.count - 1) / 2) * w.spacing;
         const ll = new maplibregl.MercatorCoordinate(
           mc.x + dx * off * mpu, mc.y + dy * off * mpu, 0).toLngLat();
         const from = new maplibregl.MercatorCoordinate(h.mx, h.my, 0).toLngLat();
+        playSfx("launch", ll.lng, ll.lat, 0.32);     // départ de roquette (spatialisé)
         const el = document.createElement("div");
         el.className = "rocket";
         document.body.appendChild(el);
@@ -946,7 +1195,7 @@
     // Missile de croisière : élément DOM screen-space (suit la cible même si
     // la carte bouge — et en multi, un missile visible = interceptable).
     function missileStrike(tgt, w) {
-      whistle(w.flight / 1000);
+      if (!playSfx("launch", tgt.lng, tgt.lat, 0.8)) whistle(w.flight / 1000);
       const el = document.createElement("div");
       el.className = "missile";
       document.body.appendChild(el);
@@ -973,16 +1222,18 @@
       fxLayer.addImpact(im);
       addMapDecals(im);          // cratère + suie : couches natives MapLibre
       addStrikeLabel(lngLat.lng, lngLat.lat, PSEUDO, key);
-      boom(w); flashFx(w.flash); shake(w.shake);
+      if (!playSfx("impact", lngLat.lng, lngLat.lat, 0.95)) boom(w);   // sample sinon procédural
+      flashFx(w.flash); shake(w.shake);
       // glitch du capteur : réservé aux grosses munitions (pas la rafale)
       if (w.flash >= 0.4) {
         const mapEl = document.getElementById("map");
         mapEl.classList.remove("glitch"); void mapEl.offsetWidth;
         mapEl.classList.add("glitch");
       }
-      setStatus(`impact ${w.name} · r ${w.r} m · ${impacts.length} frappe(s)`);
+      setStatus(`STRIKE · ${key.toUpperCase()} · r${w.r}m · ${impacts.length} total`);
       map.triggerRepaint();
       saveStrike({ pseudo: PSEUDO, lng: lngLat.lng, lat: lngLat.lat, weapon: key, seed });
+      addRadarBlip(lngLat.lng, lngLat.lat, true); updateRadar();
     }
 
     // ── Persistance : frappes sauvées côté serveur (Next API + Postgres VPS) ──
@@ -992,6 +1243,8 @@
     function ensurePseudo() {
       while (!PSEUDO) PSEUDO = (prompt("COMMANDER — enter your callsign:", "") || "").trim().slice(0, 32);
       localStorage.setItem("nmc_pseudo", PSEUDO);
+      const cdrEl = document.getElementById("cdrLine");
+      if (cdrEl) cdrEl.textContent = "CDR " + PSEUDO;
     }
     function addStrikeLabel(lng, lat, pseudo, weapon) {
       if (!pseudo) return;
@@ -1014,6 +1267,7 @@
       addMapDecals({ mx: mc.x, my: mc.y, rM: w.r, craterM: w.crater,
         seed: typeof s.seed === "number" ? s.seed : Math.random() * 100 });
       addStrikeLabel(s.lng, s.lat, s.pseudo, s.weapon);
+      addRadarBlip(s.lng, s.lat, s.pseudo === PSEUDO);
     }
     map.on("load", () => {
       ensurePseudo();
@@ -1021,44 +1275,111 @@
         .then((r) => r.json())
         .then((d) => {
           (d.strikes || []).forEach(replayStrike);
+          updateRadar();
           if (d.strikes && d.strikes.length)
-            setStatus(`${d.strikes.length} frappe(s) rechargée(s) — bienvenue ${PSEUDO}`);
+            setStatus(`${d.strikes.length} strikes reloaded — welcome CDR ${PSEUDO}`);
         })
         .catch(() => {});
     });
 
-    map.on("click", (e) => launchStrike(e.lngLat));
+    // ── Mode ARMÉ : le clic gauche ne tire PAS tant qu'on n'a pas ENGAGE ──────
+    // ENGAGE → curseur crosshair + prochain clic carte = frappe → retour grab.
+    const SHORT = { mk1: "MK-1", rkt: "RKT ×8", moab: "MOAB", nuke: "NUKE-T" };
+    const mapEl = document.getElementById("map");
+    const engageBtn = document.getElementById("engage");
+    const engageTxt = engageBtn.querySelector(".txt");
+    let armed = false;
 
-    // ── HUD : armes, coordonnées, villes ────────────────────────────────────
-    const coordsEl = document.getElementById("coords");
-    map.on("mousemove", (e) => {
-      coordsEl.textContent =
-        `TGT ${e.lngLat.lat.toFixed(4)} / ${e.lngLat.lng.toFixed(4)} · ARME : ${WEAPONS[currentWeapon].name.toUpperCase()}`;
+    function refreshEngage() {
+      engageBtn.classList.toggle("armed", armed);
+      mapEl.classList.toggle("armed", armed);
+      engageTxt.textContent = armed ? "● ARMED" : "ENGAGE";
+    }
+    function arm() { armed = true; refreshEngage(); setStatus(`ARMED · ${SHORT[currentWeapon]} — select target`); }
+    function disarm() { armed = false; refreshEngage(); }
+
+    engageBtn.addEventListener("click", () => (armed ? disarm() : arm()));
+    addEventListener("keydown", (e) => { if (e.key === "Escape" && armed) disarm(); });
+
+    map.on("click", (e) => {
+      if (!armed) return;          // désarmé : le clic sert à naviguer la carte
+      launchStrike(e.lngLat);
+      disarm();                    // une frappe par engagement → retour navigation
     });
 
+    // ── Lecture cible (coordonnées) ──────────────────────────────────────────
+    const coordsEl = document.getElementById("coords");
+    map.on("mousemove", (e) => {
+      coordsEl.textContent = `⌖ ${e.lngLat.lat.toFixed(4)} / ${e.lngLat.lng.toFixed(4)}`;
+    });
+
+    // ── Sélection d'arme : picker visuel 2×2 ─────────────────────────────────
+    const ICON = { mk1: "🚀", rkt: "🚁", moab: "✈️", nuke: "☢️" };
+    const wPicker = document.getElementById("weaponPicker");
+    const wTrigger = document.getElementById("weaponTrigger");
+    const wGrid = document.getElementById("weaponGrid");
     function selectWeapon(k) {
       if (!WEAPONS[k]) return;
       currentWeapon = k;
-      document.querySelectorAll(".wbtn").forEach((b) => b.classList.toggle("sel", b.dataset.w === k));
+      wTrigger.querySelector(".ic").textContent = ICON[k];
+      wTrigger.querySelector(".nm").textContent = SHORT[k];
+      wGrid.querySelectorAll(".wtile").forEach((t) => t.classList.toggle("sel", t.dataset.w === k));
+      refreshEngage();
     }
-    document.querySelectorAll(".wbtn").forEach((b) =>
-      b.addEventListener("click", () => selectWeapon(b.dataset.w)));
+    function toggleGrid(open) {
+      const show = open ?? wGrid.hidden;
+      wGrid.hidden = !show;
+      wTrigger.classList.toggle("open", show);
+    }
+    wTrigger.addEventListener("click", (e) => { e.stopPropagation(); toggleGrid(); });
+    wGrid.querySelectorAll(".wtile").forEach((t) =>
+      t.addEventListener("click", () => { selectWeapon(t.dataset.w); toggleGrid(false); }));
+    document.addEventListener("click", (e) => { if (!wPicker.contains(e.target)) toggleGrid(false); });
     addEventListener("keydown", (e) => {
+      if (e.key === "Escape") toggleGrid(false);
       const k = { 1: "mk1", 2: "rkt", 3: "moab", 4: "nuke" }[e.key];
       if (k) selectWeapon(k);
     });
+    selectWeapon("mk1");
 
+    // ── Saut de théâtre (dropdown villes) ────────────────────────────────────
+    // Zoom d'atterrissage large : on voit toute la ville, l'user zoome ensuite.
     const VILLES = {
-      paris:{center:[2.2945,48.8584],zoom:15.8}, newyork:{center:[-73.9857,40.7484],zoom:15.8},
-      sf:{center:[-122.4783,37.8199],zoom:15.5}, tokyo:{center:[139.7454,35.6586],zoom:15.8},
-      dubai:{center:[55.2744,25.1972],zoom:15.5},
+      paris:{center:[2.3490,48.8560],zoom:12.4}, newyork:{center:[-73.9857,40.7484],zoom:12.2},
+      sf:{center:[-122.4383,37.7599],zoom:12.2}, tokyo:{center:[139.7454,35.6586],zoom:11.8},
+      dubai:{center:[55.2744,25.1972],zoom:11.8},
     };
-    document.querySelectorAll("#panel button[data-go]").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const v = VILLES[btn.dataset.go];
-        map.flyTo({ ...v, pitch: 30, bearing: -15, duration: 3000, essential: true });
-      });
+    document.getElementById("jump").addEventListener("change", (e) => {
+      const v = VILLES[e.target.value];
+      if (v) map.flyTo({ ...v, pitch: 30, bearing: -15, duration: 3000, essential: true });
+      e.target.value = "";
     });
+
+    // ── Radar : blips des frappes autour du centre de vue (portée ~4 km) ─────
+    const blipsEl = document.getElementById("radarBlips");
+    const RADAR_R = 40, RADAR_RANGE_M = 4200;
+    const radarBlips = [];
+    function addRadarBlip(lng, lat, mine) { radarBlips.push({ lng, lat, mine, el: null }); }
+    function updateRadar() {
+      const c = map.getCenter();
+      const cMerc = maplibregl.MercatorCoordinate.fromLngLat([c.lng, c.lat], 0);
+      const mpu = cMerc.meterInMercatorCoordinateUnits();
+      for (const b of radarBlips) {
+        const m = maplibregl.MercatorCoordinate.fromLngLat([b.lng, b.lat], 0);
+        const ex = (m.x - cMerc.x) / mpu;          // est (m)
+        const ny = -(m.y - cMerc.y) / mpu;         // nord (m) — radar orienté nord
+        if (Math.hypot(ex, ny) > RADAR_RANGE_M) { if (b.el) b.el.style.display = "none"; continue; }
+        if (!b.el) {
+          b.el = document.createElement("div");
+          b.el.className = "blip" + (b.mine ? " mine" : "");
+          blipsEl.appendChild(b.el);
+        }
+        b.el.style.display = "";
+        b.el.style.left = (RADAR_R + (ex / RADAR_RANGE_M) * RADAR_R) + "px";
+        b.el.style.top = (RADAR_R - (ny / RADAR_RANGE_M) * RADAR_R) + "px";
+      }
+    }
+    map.on("move", updateRadar);
   </script>
 </body>
 </html>
