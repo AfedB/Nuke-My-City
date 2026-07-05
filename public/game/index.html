@@ -132,6 +132,27 @@
       background:repeating-linear-gradient(0deg, rgba(0,0,0,.12) 0 1px, transparent 1px 3px); }
     #vig { position:absolute; inset:0; pointer-events:none; z-index:9;
       box-shadow:inset 0 0 240px rgba(0,0,0,.8); }
+    /* grain de capteur : tuile de bruit SVG, TRÈS léger (4 %), animé par sauts
+       de position (pas de re-rendu du bruit, juste un translate GPU).
+       Conteneur clippé (overflow:hidden) : le ::before déborde de 64px pour
+       pouvoir bouger, il ne doit PAS créer de scroll sur la page. */
+    #grain { position:absolute; inset:0; pointer-events:none; z-index:9; opacity:.04; overflow:hidden; }
+    #grain::before { content:""; position:absolute; inset:-64px;
+      background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+      background-size:180px 180px; animation:grainJump .42s steps(1) infinite; }
+    @keyframes grainJump {
+      0%   { transform:translate(0,0); }
+      25%  { transform:translate(-34px,19px); }
+      50%  { transform:translate(22px,-28px); }
+      75%  { transform:translate(-12px,-9px); }
+      100% { transform:translate(0,0); }
+    }
+    /* ligne capteur : ● REC clignotant + horloge UTC + altitude estimée */
+    #rec { position:absolute; top:58px; left:16px; z-index:10; pointer-events:none;
+      font-size:9px; letter-spacing:.14em; color:#9fd9ae; opacity:.8; }
+    #rec .dot { color:#ff5a4d; text-shadow:0 0 6px rgba(255,90,77,.8);
+      animation:recblink 1.6s steps(1) infinite; }
+    @keyframes recblink { 50% { opacity:0; } }
     #flash { position:fixed; inset:0; opacity:0; pointer-events:none; z-index:20;
       background:radial-gradient(ellipse at center, #ffdfae 0%, rgba(255,190,120,.55) 45%, rgba(120,70,20,0) 80%); }
 
@@ -203,12 +224,14 @@
   <div id="map"></div>
   <div id="crt"></div>
   <div id="vig"></div>
+  <div id="grain"></div>
   <div id="flash"></div>
 
   <div id="brand">
     <h1>☢ NUKE MY CITY</h1>
     <div class="cdr" id="cdrLine">CDR ——</div>
   </div>
+  <div id="rec"><span class="dot">●</span> REC <span id="recClock">--:--:--Z</span> · IR-9 · ALT <span id="recAlt">--</span></div>
   <div id="coords">⌖ AWAITING TARGET</div>
   <div id="fps">–– FPS</div>
   <div id="status">booting…</div>
@@ -285,7 +308,7 @@
     // delivery = le VECTEUR : chaque arme a sa mise en scène de livraison.
     const WEAPONS = {
       mk1:  { name: "Missile MK-1",        delivery: "missile", r: 150, crater: 42,  flight: 1100, flash: 0.55, shake: 14, smoke: 26, debris: 70 },
-      rkt:  { name: "Roquettes AGR-20",    delivery: "heli",    r: 40,  crater: 16,  count: 8, spacing: 55, flash: 0.2, shake: 5, smoke: 8, debris: 22 },
+      rkt:  { name: "Roquettes AGR-20",    delivery: "heli",    r: 40,  crater: 16,  count: 8, spacing: 55, flash: 0.2, shake: 5, smoke: 22, debris: 22 },
       moab: { name: "MOAB GBU-43",         delivery: "jet",     r: 420, crater: 65,  flight: 1500, flash: 0.85, shake: 26, smoke: 44, debris: 110 },
       nuke: { name: "Nucléaire tactique",  delivery: "ogive",   r: 950, crater: 140, flight: 2100, flash: 1.6,  shake: 44, smoke: 80, debris: 170 },
     };
@@ -297,8 +320,8 @@
     const impacts = [];
 
     // ── Carte : vue satellite pure. La photo aérienne EST le réalisme ; la
-    //    caméra plafonne à 35° de pitch pour que l'absence de 3D soit
-    //    indétectable (cadrage "satellite militaire / drone d'altitude").
+    //    caméra est verrouillée en top-down (pitch 0) : le moindre angle
+    //    trahit l'absence de 3D (cadrage "satellite militaire / drone d'altitude").
     // Plafonne le pixel-ratio de rendu à 1.5 (au lieu de 2-3× sur retina) :
     // gros gain GPU, netteté quasi inchangée. MapLibre + Three lisent
     // devicePixelRatio à la création du canvas → on le cape juste avant.
@@ -359,11 +382,12 @@
             } },
         ],
       },
-      center: [2.3490, 48.8560], zoom: 12.4, pitch: 30, bearing: -15,
-      maxPitch: 35, maxZoom: 17.5, minZoom: 2.5,
+      center: [2.3490, 48.8560], zoom: 12.4, pitch: 0, bearing: 0,
+      maxPitch: 0, maxZoom: 17.5, minZoom: 2.5,
       antialias: true, maxTileCacheSize: 512, fadeDuration: 350,
     });
-    map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), "top-right");
+    map.addControl(new maplibregl.NavigationControl({ visualizePitch: false }), "top-right");
+    map.touchPitch.disable();   // pas de pitch au geste 2 doigts non plus
     map.doubleClickZoom.disable();   // double-clic = 2 missiles, pas un zoom surprise
 
     // ── Shaders des effets au sol (partagés par toutes les frappes) ─────────
@@ -372,7 +396,10 @@
       void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`;
 
     const NOISE_GLSL = `
-      float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7)))*43758.5453); }
+      // hash borné par fract AVANT toute grosse multiplication : la version
+      // classique sin(dot(p)*43758.) devient constante en float32 GPU dès que
+      // |p| est grand (coordonnées métriques + temps) et aplatit tout le bruit.
+      float hash(vec2 p){ p = fract(p*vec2(0.3183099, 0.3678794))*57.31; return fract(p.x*p.y*(p.x+p.y)); }
       float noise(vec2 p){
         vec2 i = floor(p), f = fract(p); f = f*f*(3.0-2.0*f);
         return mix(mix(hash(i), hash(i+vec2(1,0)), f.x),
@@ -385,6 +412,7 @@
     // de cratères → ≫ perf pour le monde persistant.
     const decalFeatures = [];
     const DECAL_CAP = 800;                        // ~400 frappes avant purge des plus vieilles
+    const FX_CAP = 150;                           // frappes avec feux/fumée vivants (culled hors écran)
     const K_DECAL = 512 / (40075017 * 256);       // px écran par mètre (mercator, à l'équateur)
     function loadDecalImages(cb) {
       if (!window.DECALS) { if (cb) cb(); return; }
@@ -416,14 +444,16 @@
             0, ["*", ["get", "szf"], 1],
             24, ["*", ["get", "szf"], 16777216]],
         },
-        paint: { "icon-opacity": 0.9 },
+        // opacité par-feature : suie translucide (le sol reste lisible, la
+        // superposition en salve sature moins vite), cratères quasi opaques.
+        paint: { "icon-opacity": ["get", "op"] },
       }, map.getLayer("fx-three") ? "fx-three" : undefined);
     }
-    function pushDecal(icon, lng, lat, fullMeters, rotDeg) {
+    function pushDecal(icon, lng, lat, fullMeters, rotDeg, opacity) {
       const cosLat = Math.max(0.2, Math.cos((lat * Math.PI) / 180));
       decalFeatures.push({
         type: "Feature", geometry: { type: "Point", coordinates: [lng, lat] },
-        properties: { icon, szf: (fullMeters * K_DECAL) / cosLat, rot: rotDeg },
+        properties: { icon, szf: (fullMeters * K_DECAL) / cosLat, rot: rotDeg, op: opacity },
       });
     }
     function addMapDecals(im) {
@@ -431,8 +461,13 @@
       const ll = new maplibregl.MercatorCoordinate(im.mx, im.my, 0).toLngLat();
       const nC = (window.DECALS && window.DECALS.craters.length) || 1;
       const ci = Math.floor((im.seed % 1) * nC) % nC;
-      pushDecal("soot", ll.lng, ll.lat, im.rM * 1.8 * 2, (im.seed * 137) % 360);        // suie
-      pushDecal("crater" + ci, ll.lng, ll.lat, im.craterM * 2, (im.seed * 293) % 360);  // cratère
+      // Suie : zone brûlée autour du cratère, PAS tout le rayon de souffle
+      // (sinon les salves fusionnent en nappe noire). Taille + opacité
+      // légèrement aléatoires par frappe pour casser l'effet tampon.
+      const sootM = (im.craterM * 3 + im.rM * 0.7) * (0.85 + ((im.seed * 3.7) % 1) * 0.3);
+      const sootOp = 0.4 + ((im.seed * 7.3) % 1) * 0.13;
+      pushDecal("soot", ll.lng, ll.lat, sootM, (im.seed * 137) % 360, sootOp);
+      pushDecal("crater" + ci, ll.lng, ll.lat, im.craterM * 2, (im.seed * 293) % 360, 0.95);
       while (decalFeatures.length > DECAL_CAP) decalFeatures.shift();
       map.getSource("decals").setData({ type: "FeatureCollection", features: decalFeatures });
     }
@@ -441,7 +476,7 @@
     const FX_FRAG = `
       precision highp float;
       varying vec2 vUv;
-      uniform float uTime, uT0, uSeed;
+      uniform float uTime, uT0, uSeed, uRM;
       ${NOISE_GLSL}
       void main(){
         vec2 p = (vUv - 0.5) * 4.0;
@@ -456,22 +491,102 @@
         // écho secondaire encore plus lent (double détente, très "film de guerre")
         float rr2 = (age - 0.30) * 0.72;
         float ring2 = exp(-pow((d - rr2)*9.0, 2.0)) * exp(-age*0.95) * step(0.0, rr2);
-        // foyers d'incendie : cellules aléatoires dans l'anneau des dégâts
-        vec2 cell = floor(p*7.0);
-        vec2 fc = fract(p*7.0) - 0.5;
-        float hasF = step(0.60, hash(cell + uSeed)) * step(d, 0.78) * step(0.10, d);
-        float flick = 0.55 + 0.45*sin(uTime*11.0 + hash(cell)*40.0);
-        float flame = hasF * flick * smoothstep(0.5, 0.12, length(fc));
-        float burn = exp(-max(age - 4.0, 0.0) / 180.0);          // brûle ~3 min
+        // fondu avant le bord du quad : sinon l'anneau qui continue de grandir
+        // se fait rogner par le carré de la géométrie (artefact visible)
+        float edgeFade = 1.0 - smoothstep(1.5, 1.9, d);
+        ring *= edgeFade; ring2 *= edgeFade;
+        // foyers d'incendie permanents : flammes en bruit animé qui lèchent
+        // (pas des disques). Coordonnées MÉTRIQUES (via uRM) : une langue de
+        // feu fait ~30 m quel que soit le calibre, un foyer ~120 m.
+        // Disposition organique : lattice TOURNÉ par frappe (sinon les grilles
+        // des frappes voisines s'alignent → quadrillage), centre de foyer
+        // jitté dans sa cellule, taille variable par foyer, et zone brûlée
+        // déformée par un bruit large avec densité décroissante du centre
+        // (pas de cercle net, emprise resserrée vers le cratère).
+        float ca = cos(uSeed), sa = sin(uSeed);
+        vec2 pm = mat2(ca, -sa, sa, ca) * p * uRM;
+        // foyers et langues de feu dimensionnés sur le CALIBRE : ~90 m / 33 m
+        // pour les grosses munitions, réduits pour les petites (roquettes
+        // r=40 m : foyers ~30 m, langues ~11 m) — sinon un seul foyer couvre
+        // tout l'impact et fait une tache difforme.
+        float cellM = clamp(uRM*0.75, 28.0, 90.0);
+        vec2 cell = floor(pm/cellM);
+        vec2 fc = fract(pm/cellM) - 0.5;
+        float h1 = hash(cell + uSeed);
+        vec2 ctr = (vec2(hash(cell + 3.1), hash(cell + 7.7)) - 0.5) * 0.7;
+        float nz = noise(pm*0.008 + uSeed*3.0);
+        float zone = smoothstep(0.60, 0.08, d + (nz - 0.5)*0.55);
+        float hasF = step(1.0 - 0.72*zone, h1) * step(0.10, d);
+        float tt = mod(uTime, 300.0);   // borne les coords de bruit (précision GPU)
+        float fn  = noise(pm*(2.7/cellM) + vec2(tt*1.6, -tt*2.2) + h1*17.0);
+        float fn2 = noise(pm*(7.65/cellM) - vec2(tt*3.0,  tt*1.2) + h1*9.0);
+        float szf = 0.28 + 0.45*hash(cell + 11.3);
+        float base = smoothstep(szf, 0.05, length(fc - ctr));
+        float flick = 0.75 + 0.25*sin(tt*13.0 + h1*40.0)*sin(tt*7.3 + h1*13.0);
         float ignite = clamp((age - 0.25)/0.8, 0.0, 1.0);
-        vec3 col = vec3(1.0,0.95,0.8)*flash*1.5
-                 + vec3(1.0,0.72,0.38)*ring*2.0
-                 + vec3(1.0,0.58,0.28)*ring2*1.1
-                 + vec3(1.0,0.45,0.08)*flame*burn*ignite*1.3;
+        float field = smoothstep(0.33, 0.62, fn) * (0.5 + 0.7*fn2);
+        float hot = smoothstep(0.62, 0.82, fn);
+        float I = hasF * base * (field + hot*1.2) * flick * ignite;
+        // rampe corps noir : lisière rouge sombre -> orange -> cœur jaune-blanc
+        vec3 fireCol = mix(vec3(0.55,0.07,0.0), vec3(1.0,0.45,0.06), clamp(I*2.2, 0.0, 1.0));
+        fireCol = mix(fireCol, vec3(1.0,0.92,0.6), clamp(I*2.2 - 1.1, 0.0, 1.0));
+        vec3 col = vec3(1.0,0.95,0.8)*flash*1.1
+                 + vec3(1.0,0.72,0.38)*ring*0.7
+                 + vec3(1.0,0.58,0.28)*ring2*0.35
+                 + fireCol * I * 2.2;
         // halo ambiant orangé qui palpite au-dessus de la zone
         col += vec3(1.0,0.35,0.05) * (1.0 - smoothstep(0.0,0.9,d)) * 0.10
-             * burn * ignite * (0.8 + 0.2*sin(uTime*7.0 + uSeed));
+             * ignite * (0.8 + 0.2*sin(uTime*7.0 + uSeed));
         gl_FragColor = vec4(col, 1.0);
+      }`;
+
+    // Champignon nucléaire vu du dessus (moab/nuke) : fireball incandescente
+    // → nuage roulant en fbm qui grossit, tourne, reste dense ~1 min puis se
+    // dissipe sur ~4 min. uShadow=1 → même forme rendue en ombre portée
+    // décalée au sol (c'est elle qui vend la hauteur en vue top-down).
+    const CLOUD_FRAG = `
+      precision highp float;
+      varying vec2 vUv;
+      uniform float uTime, uT0, uSeed, uShadow;
+      ${NOISE_GLSL}
+      float fbm(vec2 p){
+        float a = 0.5, s = 0.0;
+        for (int i = 0; i < 5; i++) { s += a*noise(p); p *= 2.03; a *= 0.5; }
+        return s;
+      }
+      void main(){
+        vec2 p = (vUv - 0.5) * 4.0;          // coordonnées en rayons d'arme
+        float age = uTime - uT0;
+        if (age <= 0.0) discard;
+        // rayon : gonfle vite (~5 s), puis dérive lente
+        float R = 0.55*(1.0 - exp(-age/5.0)) + 0.22*(1.0 - exp(-age/40.0));
+        // dense ~60 s, dissipation complète à ~4 min (les feux, eux, restent)
+        float life = 1.0 - smoothstep(60.0, 240.0, age);
+        if (life <= 0.002) discard;
+        // rotation lente + turbulence qui évolue dans le temps
+        float rot = uTime*0.02 + uSeed;
+        vec2 q = mat2(cos(rot), -sin(rot), sin(rot), cos(rot)) * p;
+        float n = fbm(q*2.2 + uSeed*7.0 + vec2(0.0, uTime*0.035));
+        float d = length(p) / max(R, 1e-4);
+        float m = 1.0 - smoothstep(0.70, 1.05, d + (n - 0.5)*0.55);  // bord déchiqueté
+        float dens = m * (0.55 + 0.45*n) * life;
+        if (uShadow > 0.5) { gl_FragColor = vec4(0.01, 0.02, 0.01, dens*0.32); return; }
+        // cœur incandescent des premières secondes (la fireball)
+        float fire = exp(-age/2.2);
+        float core = 1.0 - smoothstep(0.0, 0.5*R + 0.1, length(p));
+        vec3 hot  = mix(vec3(1.0,0.5,0.12), vec3(1.0,0.97,0.85), clamp(fire*1.4 - 0.2, 0.0, 1.0));
+        vec3 cold = mix(vec3(0.23,0.21,0.19), vec3(0.44,0.41,0.38), n);   // gris-brun roulant
+        vec3 col = mix(cold, hot, clamp(fire*(0.35 + 0.65*core), 0.0, 1.0));
+        col += vec3(1.0,0.6,0.2) * core * fire * 0.6 * (0.7 + 0.3*sin(uTime*9.0 + uSeed));
+        // éclairs internes ("mushroom cloud lightning", réel) : brefs flashs
+        // bleutés dans une poche aléatoire du nuage, surtout la 1re minute
+        float lt = uTime*2.1 + uSeed;
+        float lgate = step(0.93, hash(vec2(floor(lt), floor(uSeed*13.0))));
+        float lflash = lgate * exp(-fract(lt)*9.0) * (1.0 - smoothstep(25.0, 55.0, age));
+        vec2 lpos = (vec2(hash(vec2(floor(lt), 1.7)), hash(vec2(floor(lt), 4.2))) - 0.5) * R * 1.1;
+        float lmask = 1.0 - smoothstep(0.05*R, 0.6*R, length(p - lpos));
+        col += vec3(0.72, 0.78, 1.0) * lflash * lmask * (0.4 + dens) * 2.0;
+        gl_FragColor = vec4(col, dens*0.92);
       }`;
 
     // Fumée : Points animés 100 % dans le shader (aucune maj CPU par frame).
@@ -491,7 +606,7 @@
         pos.x += u*u*0.8;                                  // dérive du vent
         float age = uTime - uT0;
         vA = smoothstep(0.02,0.12,u) * (1.0 - smoothstep(0.5,1.0,u));
-        vA *= clamp(age/1.5, 0.0, 1.0) * clamp(1.0 - (age-160.0)/50.0, 0.0, 1.0);
+        vA *= clamp(age/1.5, 0.0, 1.0);   // montée douce, pas d'extinction : fumée permanente
         vA *= step(t, max(age,0.0)*speed);                 // la colonne pousse depuis le sol
         vU = u;
         vec4 c0 = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
@@ -508,7 +623,9 @@
         vec2 q = gl_PointCoord - 0.5;
         float m = smoothstep(0.5, 0.10, length(q));
         // orange en bas (éclairée par le feu) -> gris sombre en montant
-        vec3 col = mix(vec3(0.9,0.45,0.14), vec3(0.16,0.15,0.15), clamp(vU*2.6, 0.0, 1.0));
+        // fumée grise réaliste ; lueur orange discrète seulement à la naissance
+        // (les gros sprites orange lisaient comme des "boules de feu")
+        vec3 col = mix(vec3(0.55,0.28,0.10), vec3(0.16,0.15,0.15), clamp(vU*4.5, 0.0, 1.0));
         gl_FragColor = vec4(col, m * vA * 0.42);
       }`;
 
@@ -686,10 +803,14 @@
 
       // Crée FX + fumée + débris pour une frappe (les decals sont côté MapLibre).
       addImpact(im) {
+        // side DoubleSide OBLIGATOIRE pour les Mesh : la projection mercator
+        // de MapLibre inverse l'axe Y (déterminant négatif) → winding des
+        // triangles retourné → FrontSide fait culler TOUS les quads.
         const mkMat = (frag, blending) => new THREE.ShaderMaterial({
           vertexShader: QUAD_VERT, fragmentShader: frag,
-          transparent: true, depthWrite: false, depthTest: false, blending,
-          uniforms: { uTime: { value: now() }, uT0: { value: im.t0 }, uSeed: { value: im.seed } },
+          transparent: true, depthWrite: false, depthTest: false, blending, side: THREE.DoubleSide,
+          uniforms: { uTime: { value: now() }, uT0: { value: im.t0 },
+                      uSeed: { value: im.seed }, uRM: { value: im.rM } },
         });
         const fxMat = mkMat(FX_FRAG, THREE.AdditiveBlending);
         const smokeMat = new THREE.ShaderMaterial({
@@ -731,13 +852,38 @@
 
         im.group = g;
         im.mats = [fxMat, smokeMat, debrisMat];
+        im.debrisObj = debris;
+
+        // Champignon + son ombre : réservé aux grosses munitions (moab/nuke).
+        // Quad partagé (_quadGeo) → rien à disposer de spécifique au cap FIFO.
+        if (im.rM >= 400) {
+          const mkCloud = (shadow) => new THREE.ShaderMaterial({
+            vertexShader: QUAD_VERT, fragmentShader: CLOUD_FRAG,
+            transparent: true, depthWrite: false, depthTest: false,
+            blending: THREE.NormalBlending, side: THREE.DoubleSide,
+            uniforms: {
+              uTime: { value: now() }, uT0: { value: im.t0 },
+              uSeed: { value: im.seed }, uShadow: { value: shadow ? 1 : 0 },
+            },
+          });
+          const shMat = mkCloud(true), clMat = mkCloud(false);
+          const sh = new THREE.Mesh(this._quadGeo, shMat);
+          sh.position.set(0.38, -0.26, 0.003);   // décalage = direction du soleil
+          sh.renderOrder = 11;                    // sous les flammes/fumée
+          const cl = new THREE.Mesh(this._quadGeo, clMat);
+          cl.position.z = 0.004;
+          cl.renderOrder = 15;                    // au-dessus de tout (il EST au-dessus)
+          sh.frustumCulled = cl.frustumCulled = false;
+          g.add(sh, cl);
+          im.mats.push(shMat, clMat);
+        }
         this.scene.add(g);
         this._placeImpacts();
 
-        // Cap mémoire des effets Three (feux/fumée) : au-delà de 40 frappes,
-        // on retire les plus anciennes. Les cratères (decals) vivent dans leur
-        // propre couche batchée avec son propre cap (DECAL_CAP).
-        while (impacts.length > 40) {
+        // Cap mémoire des effets Three (feux/fumée, désormais permanents) :
+        // au-delà de FX_CAP frappes, on retire les plus anciennes. Les cratères
+        // (decals) vivent dans leur propre couche batchée avec son cap (DECAL_CAP).
+        while (impacts.length > FX_CAP) {
           const old = impacts.shift();
           if (old.group) {
             this.scene.remove(old.group);
@@ -757,8 +903,26 @@
 
         const t = now();
         const vw = gl.drawingBufferWidth, vh = gl.drawingBufferHeight;
+        // Culling manuel des effets permanents : frustumCulled natif est
+        // désactivé (positions/échelles pilotées à la main), donc on projette
+        // le centre de chaque impact + un point au bord (rayon ~2.5× pour
+        // couvrir quad 4×4 et dérive de fumée). Hors écran → groupe invisible,
+        // Three saute le draw : seuls les feux cadrés coûtent du GPU.
+        const oc = this.origin, mpuC = this.mPerUnit, pm = this.camera.projectionMatrix;
+        let anyFxVisible = false;
         for (const im of impacts) {
-          if (!im.mats) continue;
+          if (!im.mats || !im.group) continue;
+          const lx = im.mx - oc.x, ly = im.my - oc.y, s = im.rM * mpuC;
+          const c = this._projV.set(lx, ly, 0).applyMatrix4(pm);
+          const ncx = c.x, ncy = c.y;
+          const e = this._projV.set(lx + 2.5 * s, ly, 0).applyMatrix4(pm);
+          const r = Math.hypot(e.x - ncx, e.y - ncy);
+          const vis = Math.abs(ncx) <= 1 + r && Math.abs(ncy) <= 1 + r;
+          im.group.visible = vis;
+          if (!vis) continue;
+          anyFxVisible = true;
+          // débris : tout est retombé et estompé après ~10 s → draw coupé à vie
+          im.debrisObj.visible = t - im.t0 < 12;
           for (const mt of im.mats) {
             mt.uniforms.uTime.value = t;
             if (mt.uniforms.uViewport) mt.uniforms.uViewport.value.set(vw, vh);
@@ -843,9 +1007,10 @@
         this.renderer.resetState();
         this.renderer.render(this.scene, this.camera);
 
-        // Rendu 60fps uniquement quand ça bouge : feux en cours ou aéronef de
-        // strike (jet/hélico/ogive) en vol. Au repos, la map ne se re-rend plus.
-        if (impacts.length || this.aircraft.length) map.triggerRepaint();
+        // Rendu 60fps uniquement quand ça bouge : feux VISIBLES ou aéronef en
+        // vol. Feux tous hors cadre → plus de repaint ; un pan qui les ramène
+        // relance la boucle (MapLibre re-rend pendant l'interaction).
+        if (anyFxVisible || this.aircraft.length) map.triggerRepaint();
       },
     };
 
@@ -1329,6 +1494,8 @@
       if (far) { if (!playSfx("impact_far", null, null, 0.55)) boom(w); }
       else { if (!playSfx("impact", lngLat.lng, lngLat.lat, 0.95)) boom(w); }
       flashFx(w.flash); shake(w.shake);
+      // double éclair : la signature optique d'une détonation nucléaire
+      if (key === "nuke") setTimeout(() => flashFx(0.9), 380);
       // glitch du capteur : réservé aux grosses munitions (pas la rafale)
       if (w.flash >= 0.4) {
         const mapEl = document.getElementById("map");
@@ -1509,12 +1676,19 @@
         }
       }).catch(() => {});
     }
-    // Rejoue une frappe historique : cratère + label, sans explosion ni POST.
+    // Rejoue une frappe historique : cratère + label + feux/fumée permanents,
+    // sans explosion ni POST. t0 antidaté de 60 s → flash/onde déjà passés,
+    // incendies en régime établi, débris déjà culés (>12 s).
     function replayStrike(s) {
       const mc = maplibregl.MercatorCoordinate.fromLngLat([s.lng, s.lat], 0);
       const w = WEAPONS[s.weapon] || WEAPONS.mk1;
-      addMapDecals({ mx: mc.x, my: mc.y, rM: w.r, craterM: w.crater,
-        seed: typeof s.seed === "number" ? s.seed : Math.random() * 100 });
+      const seed = typeof s.seed === "number" ? s.seed : Math.random() * 100;
+      const im = { mx: mc.x, my: mc.y, rM: w.r, craterM: w.crater,
+        t0: now() - 60, smoke: w.smoke, debris: w.debris, seed };
+      impacts.push(im);
+      fxLayer.addImpact(im);     // trim FIFO au-delà de FX_CAP : seules les
+                                 // FX_CAP plus récentes gardent leurs feux
+      addMapDecals(im);
       addStrikeLabel(s.lng, s.lat, s.pseudo, s.weapon);
       addRadarBlip(s.lng, s.lat, s.pseudo === PSEUDO);
     }
@@ -1526,7 +1700,10 @@
         fetch("/api/strikes?limit=500")
           .then((r) => r.json())
           .then((d) => {
-            (d.strikes || []).forEach(replayStrike);   // rejoue dans la couche batchée
+            // L'API renvoie les plus récentes d'abord → on rejoue en ordre
+            // chronologique : les caps FIFO (FX_CAP, DECAL_CAP) gardent bien
+            // les plus RÉCENTES, et les décals récents se posent au-dessus.
+            (d.strikes || []).slice().reverse().forEach(replayStrike);
             updateRadar();
             if (d.strikes && d.strikes.length)
               setStatus(`${d.strikes.length} strikes reloaded — welcome CDR ${PSEUDO}`);
@@ -1570,6 +1747,21 @@
       coordsEl.textContent = `⌖ ${e.lngLat.lat.toFixed(4)} / ${e.lngLat.lng.toFixed(4)}`;
     });
 
+    // ── Ligne capteur : horloge UTC qui tourne + altitude estimée du "satellite"
+    //    (purement cosmétique : ~150 km à z8, ~2 km à z17, décroît avec le zoom)
+    const recClockEl = document.getElementById("recClock");
+    const recAltEl = document.getElementById("recAlt");
+    setInterval(() => {
+      recClockEl.textContent = new Date().toISOString().slice(11, 19) + "Z";
+    }, 1000);
+    function updateRecAlt() {
+      const km = Math.pow(2, 19 - map.getZoom()) * 0.16;
+      recAltEl.textContent = km >= 10 ? Math.round(km) + " KM"
+        : km >= 1 ? km.toFixed(1) + " KM" : Math.round(km * 1000) + " M";
+    }
+    map.on("move", updateRecAlt);
+    updateRecAlt();
+
     // ── Sélection d'arme : picker visuel 2×2 ─────────────────────────────────
     const ICON = { mk1: "🚀", rkt: "🚁", moab: "✈️", nuke: "☢️" };
     const wPicker = document.getElementById("weaponPicker");
@@ -1609,7 +1801,7 @@
     document.getElementById("jump").addEventListener("change", (e) => {
       uiClick(560);
       const v = VILLES[e.target.value];
-      if (v) map.flyTo({ ...v, pitch: 30, bearing: -15, duration: 3000, essential: true });
+      if (v) map.flyTo({ ...v, pitch: 0, bearing: 0, duration: 3000, essential: true });
       e.target.value = "";
     });
 
